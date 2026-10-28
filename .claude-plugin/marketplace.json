@@ -1,0 +1,16 @@
+{
+  "name": "cc-po",
+  "owner": {
+    "name": "JOY"
+  },
+  "metadata": {
+    "description": "The Product Owner workflow for Claude Code: one Product Owner session per product line that triages a GitHub Project, starts sub-sessions and accepts their work."
+  },
+  "plugins": [
+    {
+      "name": "cc-po",
+      "source": "./plugins/cc-po",
+      "description": "Product Owner sessions (product-owner), GitHub issue claims (task-claim) and a setup skill that writes the repository's config."
+    }
+  ]
+}
