@@ -218,7 +218,9 @@ so it carries:
   in the background when a review takes minutes (a slash command such as a
   review plugin's is typed by a person; an agent cannot invoke it), naming the tool-unavailable path for any reviewer that
   is missing; the `required_checks`; resolved threads; the PO's acceptance
-  gate (below); merge with `integration_merge`; evidence from
+  gate (below); merge with `integration_merge`, unless that merge is a
+  Production step, which goes to the PO ("Promoting to Production");
+  evidence from
   `test_environment`, or an explicit note that it has not picked the change
   up.
 - **Stop line**: what is not authorized. A sub-session never runs a
@@ -280,7 +282,9 @@ so it carries:
   fix is the machine-level allow rule in `setup_guide` (the integration
   merge method plus `--match-head-commit` only), which the owner approves
   once per machine. Until it exists, the owner approves each merge in that
-  session. The PO never runs the merge itself in its place.
+  session. The PO never runs the merge itself in its place, except a merge
+  that is itself a Production step (see "Promoting to Production"), which
+  only the PO runs, after the owner's approval.
 - Protocol comments are parsed: write `session=<id>` with nothing glued to
   the id (`session=<id>.` does not match), and post a new comment instead of
   editing an old one. A claim names the branch of the PR it covers, so a
@@ -383,9 +387,14 @@ does before the first "merge" of a runtime change: read the deploy
 workflows' triggers and record the answer in `production_effect` (a config
 change, through a PR). While `production_effect` is `unknown`, or says such
 a merge deploys to Production, there is no promotion: each merge of a
-runtime change is itself a Production step. The PO's "merge" for such a PR
-then needs the owner's approval first, quoted in the `PO acceptance:`
-comment, and the PO verifies the deploy afterwards as below.
+runtime change is itself a Production step, so the sub-session does not
+merge it. Once the PR passes the acceptance gate, the sub-session posts
+`handoff:` to the PO; the PO shows the owner the PR, the accepted head and
+the deploy checks below, and after the owner approves in the PO chat it
+claims the issue, records the approval in the `PO acceptance:` comment,
+merges with `integration_merge` and `--match-head-commit <accepted sha>`,
+and verifies the deploy as below. The PR and those checks are the runbook;
+a deploy that needs other steps gets a runbook file as in step 1 above.
 
 - Know what a merge into `production_branch` does before asking the owner.
   Read the deploy workflows' triggers; `production_effect` records it. If
