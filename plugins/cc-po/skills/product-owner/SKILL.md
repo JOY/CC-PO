@@ -354,7 +354,11 @@ so it carries:
    The only inputs from outside that commit are the run-time secret files of
    step 3. It stops for re-approval if anything differs from what the owner
    approved.
-3. The owner approves in the PO chat. Before running anything, the issue
+3. The owner approves in the PO chat. Where `production_effect` makes
+   merging into the Production branch and releasing separate steps (a merge
+   that only stages, then a release that moves traffic), the runbook lists
+   them as separate steps and the owner approves each one: an approval to
+   merge is not an approval to release. Before running anything, the issue
    changes writer: the sub-session posts
    `handoff: session=<its id> to=<PO session id>` naming the runbook, and
    the PO posts its own `claim:` in the tracking document's full format
@@ -400,7 +404,9 @@ a deploy that needs other steps gets a runbook file as in step 1 above.
   Read the deploy workflows' triggers; `production_effect` records it. If
   the merge deploys, it is itself a Production step: it needs the owner's
   approval and the runbook process above. If a separate release step moves
-  traffic, that is a second Production step with its own approval.
+  traffic, that is a second Production step with its own approval. A
+  promotion is deployed only once every step that moves traffic has run and
+  been verified.
 - Two review rounds, both required:
   1. Before opening the promotion PR, a local review of the promotion branch
      against `production_branch` (`promotion_reviews`), with the findings
