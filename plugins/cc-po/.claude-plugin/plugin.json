@@ -1,6 +1,6 @@
 {
   "name": "cc-po",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Run a product-line Product Owner session in Claude Code (product-owner), claim, checkpoint and end GitHub issue work (task-claim), and write the repository's config (setup). Each repository keeps its own values in docs/product-owner-config.md.",
   "author": {
     "name": "JOY"
