@@ -72,6 +72,7 @@ export function parseConfig(text) {
     if (/^\s*(```|~~~)/.test(raw)) {
       fenced = !fenced;
       current = null;
+      linesTable = false;
       continue;
     }
     if (fenced) continue;
@@ -98,7 +99,8 @@ export function parseConfig(text) {
       }
       continue;
     }
-    if (raw.trim() !== '') linesTable = false;
+    // A Markdown table ends at the first line that is not a row, blank or not.
+    linesTable = false;
   }
   const values = Object.fromEntries([...keys].map(([k, v]) => [k, stripCode(v.value)]));
   return { values, duplicates, lines };
@@ -197,6 +199,16 @@ function main(argv) {
   return 0;
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+// Run only as a script, not when imported. argv[1] may not be a real path
+// (a REPL, `node -e`, some runners); then this file is not the script.
+function isMain() {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   process.exitCode = main(process.argv.slice(2));
 }

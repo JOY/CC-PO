@@ -115,6 +115,12 @@ test('a Project id may contain a hyphen', () => {
   assert.deepEqual(checkConfig(minimal.replace('PVT_example', 'PVT_kwDNJr_OAJoN-Q')).errors, []);
 });
 
+test('a table after a blank line is not part of the Lines table', () => {
+  const text = `${minimal}\n| Key | Default |\n| --- | --- |\n| a | b |\n`;
+  assert.deepEqual(checkConfig(text).errors, []);
+  assert.equal(parseConfig(text).lines.length, 1);
+});
+
 test('a config with no lines is invalid', () => {
   const { errors } = checkConfig(minimal.slice(0, minimal.indexOf('| Line')));
   assert.match(errors.join('\n'), /Lines table has no rows/);

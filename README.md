@@ -73,7 +73,7 @@ file. You can pass answers up front, for example
 To check a config by hand:
 
 ```bash
-node <plugin directory>/skills/product-owner/check-config.mjs docs/product-owner-config.md
+node "<plugin directory>/skills/product-owner/check-config.mjs" docs/product-owner-config.md
 ```
 
 The keys and their defaults are in

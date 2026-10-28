@@ -20,7 +20,7 @@ and the default for each absent key, are in `config-schema.md` next to this
 skill; a key named here in backticks (`owner_name`) is a config key.
 
 - Read the config first. Check it with
-  `node <this skill's directory>/check-config.mjs docs/product-owner-config.md`
+  `node "<this skill's directory>/check-config.mjs" docs/product-owner-config.md`
   where Node is available.
 - If the config is missing, invalid or lacks a required value, stop and set
   it up with the `setup` skill where this skill's plugin ships one, or
@@ -123,11 +123,11 @@ owner never has to paste an approval into a sub-session's chat.
 ## Triage
 
 1. Read the board for the line:
-   `gh project item-list <project_number> --owner <project_owner> --limit 3000 --format json`,
+   `gh project item-list "<project_number>" --owner "<project_owner>" --limit 3000 --format json`,
    then filter on the line field's key (the CLI lowercases only the first
    letter of a field name, so Product Line is `product Line`) or on the
    `line:*` label. Older issues may not be on the board at all, so also run
-   `gh issue list --repo <owner/repo> --state open --label line:<line> --limit 1000`
+   `gh issue list --repo "<owner/repo>" --state open --label "line:<line>" --limit 1000`
    and add any issue you dispatch to the board first
    (`addProjectV2ItemById`).
 2. The In Progress column does not show orphaned work: a
@@ -317,35 +317,35 @@ so it carries:
    clone as its only credential helper, since a private repository needs one
    for the clone and for the lazy blob fetches a partial clone makes later:
    - clone the repository's literal URL into the PO's scratchpad,
-     `git -c credential.helper= -c "credential.helper=!gh auth git-credential" clone --config core.longpaths=true --config credential.helper= --config "credential.helper=!gh auth git-credential" --filter=blob:none https://github.com/<owner>/<repo>.git <dir>`
+     `git -c credential.helper= -c "credential.helper=!gh auth git-credential" clone --config core.longpaths=true --config credential.helper= --config "credential.helper=!gh auth git-credential" --filter=blob:none "https://github.com/<owner>/<repo>.git" "<dir>"`
      (the leading `-c` pair serves the clone itself; `--config` keeps the
      helper, and on Windows the long-path support the ignored user config
      used to give, in the clone for every later command), and in that clone
-     check `git merge-base --is-ancestor <sha> origin/<integration_branch>`;
+     check `git merge-base --is-ancestor "<sha>" "origin/<integration_branch>"`;
    - resolve the exact PR that merged the runbook,
-     `gh pr list -R <owner>/<repo> --state merged --search <merge commit>` and
-     `gh pr view <n> -R <owner>/<repo> --json baseRefName,mergeCommit,headRefOid,statusCheckRollup,reviews`:
+     `gh pr list -R "<owner>/<repo>" --state merged --search "<merge commit>"` and
+     `gh pr view "<n>" -R "<owner>/<repo>" --json baseRefName,mergeCommit,headRefOid,statusCheckRollup,reviews`:
      its base is `integration_branch`, the `required_checks` passed on its
      final head, and its review record covers that head. A check name alone
      can be spoofed by a PR's own workflow, so for each required check the
      config ties to an app, read the final head's check runs
-     (`gh api repos/<owner>/<repo>/commits/<head>/check-runs --jq '.check_runs[] | {name, conclusion, app: .app.id}'`)
+     (`gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --jq '.check_runs[] | {name, conclusion, app: .app.id}'`)
      and require a successful run from that app id. A check produced by the
      PR's own workflows (GitHub Actions) is only as trustworthy as those
      workflow files, so also require the approval of `external_review_app`
      on the final head, and that the PR changed no CI definition
-     (`git diff --name-only <merge commit>^1 <merge commit> -- .github/`
+     (`git diff --name-only "<merge commit>^1" "<merge commit>" -- .github/`
      is empty); if it did, stop and take it to the owner. When the config
      has no `external_review_app`, tell the owner that the runbook PR's
      checks are only as trustworthy as its own workflows, and get their OK;
    - check that the runbook folder at the pinned SHA is unchanged since that
-     merge commit (`git diff --quiet <merge commit> <sha> -- <runbook folder>`).
+     merge commit (`git diff --quiet "<merge commit>" "<sha>" -- "<runbook folder>"`).
 
    It reads the runbook at that commit, checks it against the issue and the
    deployment and domain rules the config lists, and shows the owner the
    concrete step list in plain `report_language` with the risk, the rollback
    and the pinned SHA. It runs only from that clone checked out at the SHA
-   (`git checkout --detach <sha>`), never from a shared worktree, a task
+   (`git checkout --detach "<sha>"`), never from a shared worktree, a task
    branch or an unreviewed head, because the PO does not review code itself.
    The only inputs from outside that commit are the run-time secret files of
    step 3. It stops for re-approval if anything differs from what the owner

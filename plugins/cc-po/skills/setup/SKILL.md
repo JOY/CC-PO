@@ -77,7 +77,7 @@ skipping anything the arguments or step 1 settled:
    and the language for everything they read (`report_language`, default
    English).
 2. **Board**: which GitHub Project the lines live on. List the candidates
-   with `gh project list --owner <owner> --format json`. If there is none,
+   with `gh project list --owner "<owner>" --format json`. If there is none,
    tell the user to create one (with Status, Priority and a single-select
    Product Line field) and run setup again, or continue with the ids they
    type.
@@ -94,8 +94,8 @@ the defaults you used in the summary so the user can change them.
 ### 3. Read the board
 
 ```bash
-gh project view <number> --owner <owner> --format json --jq .id
-gh project field-list <number> --owner <owner> --format json
+gh project view "<number>" --owner "<owner>" --format json --jq .id
+gh project field-list "<number>" --owner "<owner>" --format json
 ```
 
 From the field list take the Product Line field (`product_line_field`) and
@@ -143,7 +143,7 @@ sections the sample uses, with:
 ### 6. Check
 
 ```bash
-node <this skill's directory>/../product-owner/check-config.mjs docs/product-owner-config.md
+node "<this skill's directory>/../product-owner/check-config.mjs" docs/product-owner-config.md
 ```
 
 Fix every error and run it again until it prints `valid`. Without Node,

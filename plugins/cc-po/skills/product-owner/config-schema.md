@@ -8,7 +8,7 @@ skill writes a first version; `check-config.mjs` next to this page checks
 one:
 
 ```bash
-node <this skill's directory>/check-config.mjs docs/product-owner-config.md
+node "<this skill's directory>/check-config.mjs" docs/product-owner-config.md
 ```
 
 ## Format
