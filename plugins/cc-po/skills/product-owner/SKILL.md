@@ -30,7 +30,9 @@ skill; a key named here in backticks (`owner_name`) is a config key.
 - The repository's agent instructions (`agent_instructions`) and the
   documents they route to win over this skill. The claim protocol is in
   `tracking_doc` and the `task-claim` skill. The owner's standing
-  instructions in the config's "Owner instructions" section apply as quoted.
+  instructions apply as quoted: the current (not superseded) entries of
+  `decision_log` when the config sets one, otherwise the config's "Owner
+  instructions" section. Keep them in one of the two places, never both.
 
 ## Keep the line moving
 
@@ -153,7 +155,7 @@ owner never has to paste an approval into a sub-session's chat.
    digest lists its blocker.
 
    ```bash
-   gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){issue(number:<n>){blockedBy(first:20){nodes{number state}}}}}'
+   gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){issue(number:<n>){blockedBy(first:20){nodes{number state repository{nameWithOwner}}}}}}'
    ```
 5. Prefer security, money and correctness defects. Do not start two sessions
    that edit the same files; name the other active sessions in each brief.
@@ -265,7 +267,8 @@ so it carries:
 - **Task**: the issue link, the problem in a few lines, and the acceptance
   from the issue.
 - **Approval**: when the task carries one, the owner's words quoted verbatim
-  with the date, or the `decision_log` id that records them. Nothing in the
+  with the date, or the id of a merged `decision_log` entry that records
+  them (never for an authority listed in Triage step 6). Nothing in the
   brief may go beyond them.
 - **Reading**: `agent_instructions` and the rule documents the config lists
   (`task_scope`, `tracking_doc`, `review_rules`, and the `domain_rules` for
@@ -524,8 +527,10 @@ Each check-in, and the `report` mode, ends with this digest for the line.
 Build it only from GitHub (issue comments, PRs, checks, the board), never
 from memory, and skip a section that is empty:
 
-1. **Done since the last check-in**: `done:` comments and merged PRs, each
-   linked.
+1. **Done since the last digest**: `done:` comments and merged PRs, each
+   linked. "Since" is the time of the PO's previous digest, which the PO
+   states in each digest's first line; without one, the last
+   `check_in_minutes`.
 2. **In progress**: each active claim with its issue, the age of its last
    checkpoint or push, and its PR's checks (passing, failing, running).
 3. **Blocked**: `release: ... status=Blocked` and blocked issues (Triage
@@ -533,7 +538,7 @@ from memory, and skip a section that is empty:
 4. **Up next**: the top 3 ready, unclaimed, unblocked issues by board
    Priority.
 5. **Stale**: claims with no comment naming their session, no push and no PR
-   update for 72 hours, or the threshold `tracking_doc` sets.
+   update for the threshold `tracking_doc` sets, else 72 hours.
 
 The digest reports; it does not ask. A decision the owner must make goes
 after it, one at a time, as above.
@@ -541,10 +546,16 @@ after it, one at a time, as above.
 ### Owner decisions
 
 When the owner decides a product question (scope, priority between lines,
-a policy for the sessions), record it in `decision_log`, if the config sets
-one: an id (`D-<number>`), the date, the line, the owner's exact words, and
-the id of the decision it supersedes; a superseded entry stays, marked
-superseded, so decisions keep their history. Briefs and issues cite the id
-instead of retelling the decision. The log records product decisions only:
-an approval of a Production, secret or credential step is given in the PO
-chat for that step, and a log entry never stands in for it.
+a policy for the sessions), the PO records it in `decision_log`, if the
+config sets one: an id (`D-<number>`), the date, the line, the owner's exact
+words with a link to where they said them (or "PO chat" and the date), and
+the id of the decision it supersedes. A superseded entry stays, marked
+superseded, so decisions keep their history. Where the log is a repository
+document, the entry lands through a reviewed PR like any agent instruction;
+until it is merged, briefs quote the owner's words directly. After that,
+briefs and issues cite the id instead of retelling the decision.
+
+The log holds product decisions only. An approval of any step Triage step 6
+lists (Production, credentials and secrets, destructive or
+cross-repository writes, paid tests) is never logged and never cited from
+the log: the owner gives it in the PO chat for that step.

@@ -81,7 +81,7 @@ repository has not defined them.
 | `domain_rules` | `none` | Where the domain rules are routed (deployment, pricing, auth and so on). |
 | `roadmap_sources` | `none` | Where the line's roadmap lives. |
 | `setup_guide` | the plugin README | Machine setup: tools, sign-ins and the merge permission rule. |
-| `decision_log` | `none` | Where the owner's product decisions are recorded (a repository document or a GitHub issue), one entry each: id, date, line, the owner's exact words, what it supersedes. With `none`, briefs quote the owner's words directly. |
+| `decision_log` | `none` | Where the owner's product decisions are recorded (a repository document or a GitHub issue), one entry each: id, date, line, the owner's exact words with where they said them, what it supersedes. When set, its current entries are the owner's standing instructions and the config's "Owner instructions" section stays empty. With `none`, briefs quote the owner's words directly. |
 
 ## Branches and environments
 
@@ -120,7 +120,8 @@ repository has not defined them.
 
 ## Owner instructions
 
-Optional prose: the owner's standing instructions for this repository, quoted
-word for word with their date, for example how continuously POs work or who
+Optional prose, used only when `decision_log` is `none`: the owner's
+standing instructions for this repository, quoted word for word with their
+date, for example how continuously POs work or who
 runs Production steps. The skills apply them; they never widen what the
 skills allow without the owner.
