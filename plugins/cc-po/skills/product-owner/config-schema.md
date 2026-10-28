@@ -3,9 +3,9 @@
 The `product-owner` and `task-claim` skills are the same text in every
 repository. Everything a repository decides lives in one file in that
 repository, `docs/product-owner-config.md`, "the config". This page defines
-its keys and the default each skill uses when a key is absent. The `setup`
-skill writes a first version; `check-config.mjs` next to this page checks
-one:
+its keys and the default each skill uses when a key is absent. Where the
+plugin ships a `setup` skill, it writes a first version; otherwise follow
+`setup_guide`. `check-config.mjs` next to this page checks one:
 
 ```bash
 node "<this skill's directory>/check-config.mjs" docs/product-owner-config.md

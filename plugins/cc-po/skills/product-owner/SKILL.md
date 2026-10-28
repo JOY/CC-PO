@@ -428,8 +428,9 @@ a deploy that needs other steps gets a runbook file as in step 1 above.
   - unauthenticated requests still refused;
   - log counts in equal windows before and after the cutover, with a positive
     control.
-  Then back-merge `production_branch` into `integration_branch`, with a
-  merge commit whose result tree equals the integration branch's.
+  Then, where `production_branch` is set, back-merge it into
+  `integration_branch`, with a merge commit whose result tree equals the
+  integration branch's. Without one there is nothing to back-merge.
 
 ## Resuming
 

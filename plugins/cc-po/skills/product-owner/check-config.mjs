@@ -161,9 +161,10 @@ export function checkConfig(text) {
   // Rows are named by number: a message never repeats a value, which could
   // be a secret pasted in the wrong place.
   const labels = new Map();
-  lines.forEach(({ line, label, option }, i) => {
+  lines.forEach(({ line, label, option, po }, i) => {
     const row = `Lines row ${i + 1}`;
     if (!line) errors.push(`${row} has no line name`);
+    if (!po) errors.push(`${row} has no PO session (write the session title, or none and who decides)`);
     if (!/^line:[a-z0-9][a-z0-9-]*$/.test(label ?? '')) errors.push(`${row}: label must look like line:<slug>`);
     if (labels.has(label)) errors.push(`${row}: same label as row ${labels.get(label)}`);
     else labels.set(label, i + 1);

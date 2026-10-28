@@ -128,6 +128,11 @@ test('a required key cannot be none', () => {
   assert.match(errors, /project_owner is required and cannot be none/);
 });
 
+test('a Lines row needs a PO session', () => {
+  const text = minimal.replace('| `Core Product Owner` |', '| |');
+  assert.match(checkConfig(text).errors.join('\n'), /Lines row 1 has no PO session/);
+});
+
 test('a config with no lines is invalid', () => {
   const { errors } = checkConfig(minimal.slice(0, minimal.indexOf('| Line')));
   assert.match(errors.join('\n'), /Lines table has no rows/);
