@@ -117,6 +117,7 @@ export function checkConfig(text) {
   for (const key of duplicates) errors.push(`${key} appears more than once`);
   for (const key of REQUIRED) {
     if (!values[key]) errors.push(`${key} is required`);
+    else if (isNone(values[key])) errors.push(`${key} is required and cannot be none`);
   }
   for (const [key, value] of Object.entries(values)) {
     if (!KNOWN.has(key)) warnings.push(`${key} is not a schema key; agents read it as prose`);

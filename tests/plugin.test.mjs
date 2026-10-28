@@ -121,6 +121,13 @@ test('a table after a blank line is not part of the Lines table', () => {
   assert.equal(parseConfig(text).lines.length, 1);
 });
 
+test('a required key cannot be none', () => {
+  const text = minimal.replace('- owner_name: Sam', '- owner_name: none').replace('- project_owner: example', '- project_owner: none');
+  const errors = checkConfig(text).errors.join('\n');
+  assert.match(errors, /owner_name is required and cannot be none/);
+  assert.match(errors, /project_owner is required and cannot be none/);
+});
+
 test('a config with no lines is invalid', () => {
   const { errors } = checkConfig(minimal.slice(0, minimal.indexOf('| Line')));
   assert.match(errors.join('\n'), /Lines table has no rows/);
