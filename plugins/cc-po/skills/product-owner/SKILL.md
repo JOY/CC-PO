@@ -527,17 +527,23 @@ Each check-in, and the `report` mode, ends with this digest for the line.
 Build it only from GitHub (issue comments, PRs, checks, the board), never
 from memory, and skip a section that is empty:
 
-1. **Done since the last digest**: `done:` comments and merged PRs, each
-   linked. "Since" is the time of the PO's previous digest, which the PO
-   states in each digest's first line; without one, the last
-   `check_in_minutes`.
-2. **In progress**: each active claim with its issue, the age of its last
+1. **Done since the last digest**: issues whose `done:` was posted since
+   then, each linked. Only `done_definition` makes an issue done.
+   "Since" is the time of the PO's previous digest, which the PO states in
+   each digest's first line; without one, the last `check_in_minutes`.
+2. **Merged, not yet done**: PRs merged since then whose issue is still
+   open (for example merged into `integration_branch` and waiting for
+   Production), with where each one runs now.
+3. **In progress**: each active claim with its issue, the age of its last
    checkpoint or push, and its PR's checks (passing, failing, running).
-3. **Blocked**: `release: ... status=Blocked` and blocked issues (Triage
+4. **Waiting on the PO or the owner**: issues whose latest protocol comment
+   is a `handoff:` to the PO or to the owner (for example a prepared
+   Production step), with what each one waits for.
+5. **Blocked**: `release: ... status=Blocked` and blocked issues (Triage
    step 4), with who can clear each one; what waits on the owner first.
-4. **Up next**: the top 3 ready, unclaimed, unblocked issues by board
+6. **Up next**: the top 3 ready, unclaimed, unblocked issues by board
    Priority.
-5. **Stale**: claims with no comment naming their session, no push and no PR
+7. **Stale**: claims with no comment naming their session, no push and no PR
    update for the threshold `tracking_doc` sets, else 72 hours.
 
 The digest reports; it does not ask. A decision the owner must make goes
