@@ -1,0 +1,39 @@
+name: sync from upstream
+
+# Runs only in the private copy DOS/CC-PO. It pulls `main` and the version tags
+# from the public JOY/CC-PO (its upstream), so Claude organization plugin sync,
+# which reads only private repositories, sees each release. No secret: the
+# upstream is public and the push uses this repository's own token.
+#
+# GITHUB_TOKEN cannot write workflow files, so a release that changes this file
+# fails here once; push that commit to DOS/CC-PO by hand, then it runs again.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'DOS/CC-PO'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Mirror main and tags from JOY/CC-PO
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/JOY/CC-PO.git
+          git fetch --prune --force --tags upstream '+refs/heads/main:refs/remotes/upstream/main'
+          git push --force origin 'refs/remotes/upstream/main:refs/heads/main'
+          git push --force origin --tags
+          echo "main is $(git rev-parse refs/remotes/upstream/main)"
