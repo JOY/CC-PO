@@ -81,6 +81,7 @@ repository has not defined them.
 | `domain_rules` | `none` | Where the domain rules are routed (deployment, pricing, auth and so on). |
 | `roadmap_sources` | `none` | Where the line's roadmap lives. |
 | `setup_guide` | the plugin README | Machine setup: tools, sign-ins and the merge permission rule. |
+| `decision_log` | `none` | Where the owner's product decisions are recorded (a repository document or a GitHub issue), one entry each: id, date, line, the owner's exact words, what it supersedes. With `none`, briefs quote the owner's words directly. |
 
 ## Branches and environments
 

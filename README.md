@@ -141,6 +141,10 @@ Adjust it if your integration branch uses another merge method.
   after the owner approves them in the PO chat. Session safety checks accept
   only the user's own words in a session, so an approval relayed by the PO
   would not unlock a sub-session.
+- **Reports and decisions.** Every PO check-in ends with a digest built from
+  GitHub only (done, in progress, blocked, up next, stale). Product
+  decisions the owner makes can be kept in a decision log the config names,
+  cited by id in briefs; Production approvals still happen in the PO chat.
 - **Your rules win.** The repository's agent instructions (`AGENTS.md` or
   `CLAUDE.md`) and the documents your config names override the skills.
 

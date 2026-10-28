@@ -17,7 +17,7 @@ export const KNOWN = new Set([
   'project_url', 'product_line_field', 'priority_field', 'bot_owned_fields',
   'issue_types', 'org_priority_field', 'org_effort_field', 'issue_notes',
   'agent_instructions', 'task_scope', 'tracking_doc', 'review_rules', 'domain_rules',
-  'roadmap_sources', 'setup_guide',
+  'roadmap_sources', 'setup_guide', 'decision_log',
   'integration_branch', 'integration_merge', 'default_branch', 'draft_pr_first',
   'production_branch', 'production_merge', 'production_effect', 'promotion_notes',
   'test_environment', 'done_definition',

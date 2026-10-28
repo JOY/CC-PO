@@ -51,6 +51,7 @@ skill.
 - domain_rules: none
 - roadmap_sources: `ROADMAP.md`
 - setup_guide: the cc-po plugin README
+- decision_log: `docs/product-decisions.md`
 
 ## Branches, environments and gates
 

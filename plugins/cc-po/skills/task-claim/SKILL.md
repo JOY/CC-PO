@@ -54,7 +54,11 @@ Read any matching issue, its comments, and its linked PRs. If another session
 holds an active claim on it, or an active claim on another issue overlaps your
 files, stop: note it on the issues and wait, or ask the owner which goes
 first. If no issue exists, create one with the scope, acceptance criteria,
-and the files or module it touches, plus anything `issue_notes` requires.
+and the files or module it touches, plus anything `issue_notes` requires,
+in the shape of the `product-owner` skill's "Issue spec" (Goal,
+Requirements, Approach, Acceptance, Files). Name a dependency with a
+`Blocked by #<n>` line or GitHub's "blocked by" relation; do not start work
+an open issue still blocks.
 
 ### 2. Claim
 
@@ -113,8 +117,21 @@ the evidence, and the next step. Not every command.
 
 Post exactly one of:
 
-- `handoff: session=<id> to=<executor or owner>` with done, evidence,
-  remaining work, and next step. The receiver posts its own claim.
+- `handoff: session=<id> to=<executor or owner>`, with this body under the
+  protocol line, so the receiver can start from the comment alone:
+
+  ```text
+  Done: what is finished, with links (commits, PR, comments).
+  Evidence: test results, check runs, verification output.
+  Remaining: what is left of the acceptance.
+  Next step: the first thing the receiver does.
+  Blockers: each one, and who can clear it (or "none").
+  Branch: <name>, pushed at <sha> (or "not pushed: <why>").
+  ```
+
+  Before posting, turn untracked work you found into a `checkpoint:` on
+  this issue or a new issue, so nothing lives only in the session. The
+  receiver posts its own claim.
 - `release: session=<id> reason=<why> status=<Ready|Blocked>` when stopping
   without finishing. A blocker names who can clear it.
 - `done: session=<id>` with the acceptance evidence named in the issue, then

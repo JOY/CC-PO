@@ -91,7 +91,8 @@ sub-session finishes.
   runtime allows one, about every `check_in_minutes` minutes, until the line
   has no authorized work left. Each check-in is coordination: read reports,
   look at the CI of PRs that are waiting, nudge their owners, refill free
-  slots and refine the backlog. It is not a tight CI poll.
+  slots and refine the backlog ("Refine: is it ready?"). It ends with the
+  digest ("Check-in digest"). It is not a tight CI poll.
 
 ## Lines and names
 
@@ -146,12 +147,40 @@ owner never has to paste an approval into a sub-session's chat.
    claim, recent pushes or PR activity, and live sessions (`ListAgents`,
    `list_sessions`). Never take over an active claim; follow the stale-claim
    rule in the tracking document.
-4. Prefer security, money and correctness defects. Do not start two sessions
+4. Check dependencies. An issue is blocked while an open issue blocks it,
+   through GitHub's native "blocked by" relation or a `Blocked by #<n>` line
+   in its body. Dispatch only unblocked issues; a blocked one waits, and the
+   digest lists its blocker.
+
+   ```bash
+   gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){issue(number:<n>){blockedBy(first:20){nodes{number state}}}}}'
+   ```
+5. Prefer security, money and correctness defects. Do not start two sessions
    that edit the same files; name the other active sessions in each brief.
-5. If acceptance needs authority the owner has not given (Production,
+6. If acceptance needs authority the owner has not given (Production,
    credentials, destructive or cross-repository writes, paid tests), either
    get the owner's approval first or scope the brief to stop before that
    step.
+
+### Refine: is it ready?
+
+On each check-in, and before dispatching, read the line's open, unclaimed
+issues against this definition of ready and flag what fails:
+
+- acceptance that cannot be checked (no observable result, "improve",
+  "clean up");
+- a missing field from "Issue fields", or a missing dependency the body
+  implies;
+- work too large or unclear for a fresh session, which needs a spec (see
+  "Issue spec") or a design task first;
+- no activity for more than 30 days: still wanted, or close it;
+- a Priority that disagrees with the body (an outage at Low, a nice-to-have
+  at Urgent).
+
+For each flag, propose the fix: the sharper acceptance, the field value, the
+spec section to add, close or keep. Refine invents no new issues, and a
+change to many issues at once still needs the owner's OK (see "Issue
+fields").
 
 ## Issue fields
 
@@ -192,6 +221,35 @@ Changing many issues at once (bulk labels or fields) needs the owner's
 explicit OK first. Send at most 10 mutations per GraphQL request; 40 timed
 out with 504.
 
+## Issue spec
+
+Write every issue the PO creates so a fresh session can act on it without
+this conversation:
+
+```markdown
+## Goal
+What changes for users or operators, and why now.
+
+## Requirements
+- What must be true when it is done.
+
+## Approach
+The recommended way, or "the session decides" with the constraints.
+
+## Acceptance
+- Observable checks, each one testable.
+
+## Files
+The files or module it touches, and what it must not touch.
+
+Blocked by #<n>        (only when it is)
+Decision: <decision id> (only when an owner decision applies)
+```
+
+- Ask every open question in one message, not one at a time.
+- State each assumption as an assumption, instead of inferring it silently.
+- Leave no section blank: write `TBD: <why> (<who decides>)`.
+
 ## Starting a sub-session
 
 Give each sub-session its own issue and files. Each sub-session decides for
@@ -207,7 +265,8 @@ so it carries:
 - **Task**: the issue link, the problem in a few lines, and the acceptance
   from the issue.
 - **Approval**: when the task carries one, the owner's words quoted verbatim
-  with the date. Nothing in the brief may go beyond them.
+  with the date, or the `decision_log` id that records them. Nothing in the
+  brief may go beyond them.
 - **Reading**: `agent_instructions` and the rule documents the config lists
   (`task_scope`, `tracking_doc`, `review_rules`, and the `domain_rules` for
   the files the task touches).
@@ -263,7 +322,8 @@ so it carries:
   conflicts and review comments, not on success.
 - Take to the owner only material product, risk or Production decisions and
   human-only steps (sign-ins, console deletions). Say what, why, the risk,
-  your recommendation and the choices, then relay the answer word for word.
+  your recommendation and the choices, then relay the answer word for word
+  and record a product decision in `decision_log` ("Owner decisions").
 - If a message to a sub-session would grant authority the owner has not
   given, do not send it; ask the owner. Read-only extensions of a security
   or incident scope are scope changes too.
@@ -457,3 +517,34 @@ Plain `report_language`, written for `owner_profile`. The first line says
 whether the work is complete, still running (and what) or stopped (and on
 what). Link sessions and PRs, keep merged, test environment and Production
 distinct, and ask one decision at a time with your recommendation first.
+
+### Check-in digest
+
+Each check-in, and the `report` mode, ends with this digest for the line.
+Build it only from GitHub (issue comments, PRs, checks, the board), never
+from memory, and skip a section that is empty:
+
+1. **Done since the last check-in**: `done:` comments and merged PRs, each
+   linked.
+2. **In progress**: each active claim with its issue, the age of its last
+   checkpoint or push, and its PR's checks (passing, failing, running).
+3. **Blocked**: `release: ... status=Blocked` and blocked issues (Triage
+   step 4), with who can clear each one; what waits on the owner first.
+4. **Up next**: the top 3 ready, unclaimed, unblocked issues by board
+   Priority.
+5. **Stale**: claims with no comment naming their session, no push and no PR
+   update for 72 hours, or the threshold `tracking_doc` sets.
+
+The digest reports; it does not ask. A decision the owner must make goes
+after it, one at a time, as above.
+
+### Owner decisions
+
+When the owner decides a product question (scope, priority between lines,
+a policy for the sessions), record it in `decision_log`, if the config sets
+one: an id (`D-<number>`), the date, the line, the owner's exact words, and
+the id of the decision it supersedes; a superseded entry stays, marked
+superseded, so decisions keep their history. Briefs and issues cite the id
+instead of retelling the decision. The log records product decisions only:
+an approval of a Production, secret or credential step is given in the PO
+chat for that step, and a log entry never stands in for it.
