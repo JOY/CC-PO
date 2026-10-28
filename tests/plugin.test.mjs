@@ -140,7 +140,7 @@ test('logins, field ids, priority options and nested fences are checked', () => 
   assert.deepEqual(checkConfig(minimal.replace('project_owner: example', 'project_owner: my-org2')).errors, []);
   const field = (v) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- product_line_field: ${v}`);
   assert.match(err(field('PVT_SFabc')), /product_line_field must start with a board field id/);
-  assert.deepEqual(checkConfig(field('PVTSSF_lADO-x_y9 (options in Lines)')).errors, []);
+  assert.deepEqual(checkConfig(field('PVTSSF_ex-am_ple9 (options in Lines)')).errors, []);
   const prio = (v) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- priority_field: ${v}`);
   assert.match(err(prio('PVTSSF_example')), /priority_field needs an option id for Urgent/);
   assert.match(err(prio('`PVTSSF_x`; Urgent `a1`, High `b2`, Normal `c3`')), /priority_field needs an option id for Low/);
