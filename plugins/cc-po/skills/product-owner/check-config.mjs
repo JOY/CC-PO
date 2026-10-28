@@ -67,15 +67,21 @@ export function parseConfig(text) {
   const lines = [];
   let linesTable = false;
   let current = null;
-  let fenced = false;
+  // The open fence (its character and length): only the same character, at
+  // least as long and with nothing after it, closes it, so a ``` snippet
+  // inside a ~~~ example stays inside.
+  let fence = null;
   for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
-    if (/^\s*(```|~~~)/.test(raw)) {
-      fenced = !fenced;
+    const marker = raw.match(/^\s*(`{3,}|~{3,})(.*)$/);
+    if (marker) {
+      const [, run, rest] = marker;
+      if (!fence) fence = { char: run[0], length: run.length };
+      else if (run[0] === fence.char && run.length >= fence.length && rest.trim() === '') fence = null;
       current = null;
       linesTable = false;
       continue;
     }
-    if (fenced) continue;
+    if (fence) continue;
     const bullet = raw.match(/^- `?([a-z][a-z0-9_]*)`?:\s*(.*)$/);
     if (bullet) {
       const [, key, value] = bullet;
@@ -130,12 +136,23 @@ export function checkConfig(text) {
     errors.push('project_number must be a positive integer');
   }
   if (values.project_id && !/^PVT_[\w-]+$/.test(values.project_id)) errors.push('project_id must be a Project node id (PVT_...)');
-  if (values.project_owner && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(values.project_owner)) {
+  // A GitHub login: letters, digits and single inner hyphens, at most 39.
+  if (values.project_owner && !/^(?=.{1,39}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(values.project_owner)) {
     errors.push('project_owner must be a GitHub login');
   }
   for (const key of ['product_line_field', 'priority_field']) {
     const v = values[key];
-    if (v && !isNone(v) && !/^PVTS?SF_\w+/.test(v.replace(/`/g, ''))) errors.push(`${key} must start with a board field id (PVTSSF_...) or be none`);
+    if (v && !isNone(v) && !/^PVTSSF_[A-Za-z0-9_-]+(?=$|[\s;(])/.test(v.replace(/`/g, ''))) {
+      errors.push(`${key} must start with a board field id (PVTSSF_...) or be none`);
+    }
+  }
+  // The PO sets board Priority with an option id, so each level needs one.
+  const priority = values.priority_field;
+  if (priority && !isNone(priority)) {
+    const options = priority.replace(/`/g, '').split(';').slice(1).join(';');
+    for (const level of ['Urgent', 'High', 'Normal', 'Low']) {
+      if (!new RegExp(`\\b${level}\\s+\\S+`).test(options)) errors.push(`priority_field needs an option id for ${level} (<field id>; Urgent <id>, High <id>, Normal <id>, Low <id>)`);
+    }
   }
   for (const key of ['sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes']) {
     const v = values[key];

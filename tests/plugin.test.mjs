@@ -133,6 +133,22 @@ test('a Lines row needs a PO session', () => {
   assert.match(checkConfig(text).errors.join('\n'), /Lines row 1 has no PO session/);
 });
 
+test('logins, field ids, priority options and nested fences are checked', () => {
+  const err = (text) => checkConfig(text).errors.join('\n');
+  assert.match(err(minimal.replace('project_owner: example', 'project_owner: acme-')), /project_owner must be a GitHub login/);
+  assert.match(err(minimal.replace('project_owner: example', 'project_owner: a--b')), /project_owner must be a GitHub login/);
+  assert.deepEqual(checkConfig(minimal.replace('project_owner: example', 'project_owner: my-org2')).errors, []);
+  const field = (v) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- product_line_field: ${v}`);
+  assert.match(err(field('PVT_SFabc')), /product_line_field must start with a board field id/);
+  assert.deepEqual(checkConfig(field('PVTSSF_lADO-x_y9 (options in Lines)')).errors, []);
+  const prio = (v) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- priority_field: ${v}`);
+  assert.match(err(prio('PVTSSF_example')), /priority_field needs an option id for Urgent/);
+  assert.match(err(prio('`PVTSSF_x`; Urgent `a1`, High `b2`, Normal `c3`')), /priority_field needs an option id for Low/);
+  assert.deepEqual(checkConfig(prio('`PVTSSF_x`; Urgent `a1`, High `b2`, Normal `c3`, Low `d4`')).errors, []);
+  const nested = `${minimal}\n~~~markdown\n\`\`\`text\nsnippet\n\`\`\`\n- owner_name: Example\n~~~\n`;
+  assert.deepEqual(checkConfig(nested).errors, []);
+});
+
 test('a config with no lines is invalid', () => {
   const { errors } = checkConfig(minimal.slice(0, minimal.indexOf('| Line')));
   assert.match(errors.join('\n'), /Lines table has no rows/);
