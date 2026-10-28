@@ -33,6 +33,9 @@ skill; a key named here in backticks (`owner_name`) is a config key.
   instructions apply as quoted: the current (not superseded) entries of
   `decision_log` when the config sets one, otherwise the config's "Owner
   instructions" section. Keep them in one of the two places, never both.
+  Where a current owner instruction differs from this skill's default
+  workflow (for example who runs Production steps, or how continuously the
+  PO works), the instruction wins; a superseded one no longer applies.
 
 ## Keep the line moving
 
