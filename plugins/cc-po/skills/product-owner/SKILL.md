@@ -284,17 +284,22 @@ last one (`Sprint 4`, then `Sprint 5`).
   completed ones included, with its `id` (an iteration left out is deleted
   and its items lose their Sprint); give the new ones no `id`. `startDate`
   is the first existing iteration's start, and `duration` the configured
-  length:
+  length. Titles are live text anyone with write access can set, so never
+  paste them into a command line or the query: write the request as JSON
+  with a JSON encoder (for example `node` with `JSON.stringify`, or
+  `jq -n`), the values in `variables`, to a file in the scratchpad, and
+  send that file:
+
+  ```json
+  {"query": "mutation($field: ID!, $config: ProjectV2IterationFieldConfigurationInput!) { updateProjectV2Field(input: {fieldId: $field, iterationConfiguration: $config}) { projectV2Field { ... on ProjectV2IterationField { configuration { iterations { id title startDate } completedIterations { id title } } } } } }",
+   "variables": {"field": "<sprint field id>",
+     "config": {"startDate": "<first start>", "duration": <n>, "iterations": [
+       {"id": "<existing id>", "title": "<its title>", "startDate": "<its start>", "duration": <its duration>},
+       {"title": "<next title>", "startDate": "<next start>", "duration": <n>}]}}}
+  ```
 
   ```bash
-  gh api graphql -f query='mutation { updateProjectV2Field(input: {
-    fieldId: "<sprint field id>",
-    iterationConfiguration: {startDate: "<first start>", duration: <n>,
-      iterations: [
-        {id: "<existing id>", title: "<its title>", startDate: "<its start>", duration: <its duration>},
-        {title: "<next title>", startDate: "<next start>", duration: <n>}]}}) {
-    projectV2Field { ... on ProjectV2IterationField { configuration {
-      iterations { id title startDate } completedIterations { id title } } } } } }'
+  gh api graphql --input "<request file>"
   ```
 
   GitHub offers no way to add an iteration without replacing the rest, and
