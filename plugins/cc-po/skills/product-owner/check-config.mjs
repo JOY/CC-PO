@@ -14,7 +14,7 @@ export const REQUIRED = ['owner_name', 'project_owner', 'project_number', 'proje
 export const KNOWN = new Set([
   ...REQUIRED,
   'owner_profile', 'report_language', 'agent_account',
-  'project_url', 'product_line_field', 'priority_field', 'bot_owned_fields',
+  'project_url', 'product_line_field', 'priority_field', 'sprint_field', 'bot_owned_fields',
   'issue_types', 'org_priority_field', 'org_effort_field', 'issue_notes',
   'agent_instructions', 'task_scope', 'tracking_doc', 'review_rules', 'domain_rules',
   'roadmap_sources', 'setup_guide', 'decision_log',
@@ -153,6 +153,14 @@ export function checkConfig(text) {
     for (const level of ['Urgent', 'High', 'Normal', 'Low']) {
       if (!new RegExp(`\\b${level}\\s+\\S+`).test(options)) errors.push(`priority_field needs an option id for ${level} (<field id>; Urgent <id>, High <id>, Normal <id>, Low <id>)`);
     }
+  }
+  // The PO rolls items over and adds iterations of this length, so it needs
+  // the iteration field's id and the sprint length in days.
+  const sprint = values.sprint_field;
+  if (sprint && !isNone(sprint)) {
+    const v = sprint.replace(/`/g, '');
+    if (!/^PVTIF_[A-Za-z0-9_-]+(?=$|[\s;(])/.test(v)) errors.push('sprint_field must start with an iteration field id (PVTIF_...) or be none');
+    if (!/^[^;]*;\s*[^\s,;][^,;]*,\s*[1-9]\d*\s+days?\b/.test(v)) errors.push('sprint_field needs the field name and the sprint length (<field id>; <field name>, <n> days)');
   }
   for (const key of ['sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes']) {
     const v = values[key];

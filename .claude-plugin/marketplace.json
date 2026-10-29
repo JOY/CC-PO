@@ -9,6 +9,7 @@
   "plugins": [
     {
       "name": "cc-po",
+      "displayName": "CC Product Owner",
       "source": "./plugins/cc-po",
       "description": "Product Owner sessions (product-owner), GitHub issue claims (task-claim) and a setup skill that writes the repository's config."
     }

@@ -149,6 +149,19 @@ test('logins, field ids, priority options and nested fences are checked', () => 
   assert.deepEqual(checkConfig(nested).errors, []);
 });
 
+test('a sprint field needs an iteration field id, a name and a length', () => {
+  const err = (text) => checkConfig(text).errors.join('\n');
+  const sprint = (v) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- sprint_field: ${v}`);
+  assert.deepEqual(checkConfig(sprint('`PVTIF_ex-am_ple9`; Sprint, 7 days (starts Monday; #1)')).errors, []);
+  assert.deepEqual(checkConfig(sprint('none')).errors, []);
+  assert.deepEqual(checkConfig(sprint('PVTIF_x; Iteration, 14 days')).warnings, []);
+  assert.match(err(sprint('PVTSSF_x; Sprint, 7 days')), /sprint_field must start with an iteration field id/);
+  assert.match(err(sprint('PVTIF_x')), /sprint_field needs the field name and the sprint length/);
+  assert.match(err(sprint('PVTIF_x; Sprint')), /sprint_field needs the field name and the sprint length/);
+  assert.match(err(sprint('PVTIF_x; Sprint, 0 days')), /sprint_field needs the field name and the sprint length/);
+  assert.match(err(sprint('PVTIF_x; , 7 days')), /sprint_field needs the field name and the sprint length/);
+});
+
 test('a config with no lines is invalid', () => {
   const { errors } = checkConfig(minimal.slice(0, minimal.indexOf('| Line')));
   assert.match(errors.join('\n'), /Lines table has no rows/);

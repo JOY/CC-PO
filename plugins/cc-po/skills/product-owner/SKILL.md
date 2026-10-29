@@ -10,6 +10,11 @@ user-invocable: true
 One Claude desktop session per product line is its Product Owner. The PO
 coordinates; the sub-sessions it starts do the investigation and the work.
 
+The owner talks only to the PO. The PO never asks the owner to open, read,
+answer or approve anything inside a sub-session: whatever a sub-session
+needs from the owner (a decision, an approval, a human-only step) reaches
+the owner through the PO chat.
+
 ## The config
 
 This skill is the same text in every repository that uses it. Everything a
@@ -36,6 +41,9 @@ skill; a key named here in backticks (`owner_name`) is a config key.
   Where a current owner instruction differs from this skill's default
   workflow (for example who runs Production steps, or how continuously the
   PO works), the instruction wins; a superseded one no longer applies.
+- GitHub reads and writes go through the `gh` CLI, as the commands below
+  show. A GitHub MCP connector, where the plugin or session provides one,
+  is optional; never depend on it.
 
 ## Keep the line moving
 
@@ -96,7 +104,8 @@ sub-session finishes.
   runtime allows one, about every `check_in_minutes` minutes, until the line
   has no authorized work left. Each check-in is coordination: read reports,
   look at the CI of PRs that are waiting, nudge their owners, refill free
-  slots and refine the backlog ("Refine: is it ready?"). It ends with the
+  slots, refine the backlog ("Refine: is it ready?") and keep the sprints
+  ("Sprints") where the config sets them. It ends with the
   digest ("Check-in digest"). It is not a tight CI poll.
 
 ## Lines and names
@@ -191,7 +200,8 @@ fields").
 
 Every issue the PO creates or hands out gets each of these that the config
 defines (skip a key that is `none`), plus anything `issue_notes` requires.
-Fill only empty values and never overwrite another session's choice. Fields
+Fill only empty values and never overwrite another session's choice, except
+a Sprint as "Sprints" describes. Fields
 in `bot_owned_fields` are set through claim comments, never by hand. When
 `agent_account` names one shared account, Assignees stay empty.
 
@@ -203,6 +213,7 @@ in `bot_owned_fields` are set through claim comments, never by hand. When
 | `line:*` label | issue | Lines table |
 | Product Line | board field | `product_line_field`, Lines table |
 | Priority | board field | `priority_field` |
+| Sprint | board iteration field | `sprint_field` (see "Sprints") |
 
 A board field is set on the issue's item (`addProjectV2ItemById` returns the
 item id and is idempotent):
@@ -214,6 +225,8 @@ gh api graphql -f query='mutation {
     value: {singleSelectOptionId: "<option id>"}}) { clientMutationId } }'
 ```
 
+An iteration field takes `value: {iterationId: "<iteration id>"}` instead.
+
 Organization issue fields need the `GraphQL-Features: issue_fields` header:
 
 ```bash
@@ -223,8 +236,83 @@ gh api graphql -H "GraphQL-Features: issue_fields" -f query='mutation {
 ```
 
 Changing many issues at once (bulk labels or fields) needs the owner's
-explicit OK first. Send at most 10 mutations per GraphQL request; 40 timed
-out with 504.
+explicit OK first; the sprint rollover below is the one standing exception.
+Send at most 10 mutations per GraphQL request; 40 timed out with 504.
+
+## Sprints
+
+This applies when `sprint_field` is set. Sprint is a PO field like
+Priority: the PO sets it by hand, never a board bot. Read the field's
+iterations live each time, never from a copy:
+
+```bash
+gh api graphql -f query='{ node(id: "<sprint field id>") { ... on ProjectV2IterationField {
+  configuration { startDay duration
+    iterations { id title startDate duration }
+    completedIterations { id title startDate duration } } } } }'
+```
+
+`iterations` holds the current and future sprints, oldest first; the
+current one is the sprint whose days include today. `completedIterations`
+holds the ended ones. A new sprint's title continues the numbering of the
+last one (`Sprint 4`, then `Sprint 5`).
+
+- **Hand-out.** When the PO hands out an issue or a session starts work on
+  it, the PO sets its Sprint to the current sprint, or to the next one when
+  the work is planned for later. A set Sprint changes only when work starts
+  on an issue planned for a later sprint (it moves to the current one) and
+  at the rollover.
+- **Rollover.** At the first check-in on or after a sprint's start day, the
+  PO moves its line's unfinished items from ended sprints to the current
+  one: every item of an open issue whose Status is not Done (an issue
+  waiting for Production stays open and moves too). Items of closed issues
+  keep their ended sprint as the record. Each PO rolls over only its own
+  line. Then it reports each sprint it rolled over to the owner once, in one
+  line counted from the board: how many of the line's items in it are Done,
+  how many moved to the current sprint, and how many closed without being
+  Done (not planned), when any. The rollover needs no owner OK each week;
+  the batch limit above still applies.
+- **Add sprints.** One PO adds sprints, so two writes never race: the
+  sprint keeper, the PO of the first line in the Lines table that has a PO
+  session. Any other PO that sees fewer than two future sprints after the
+  current one tells the keeper with SendMessage (or the owner, when the
+  keeper cannot be reached) and does not add them itself. The keeper adds
+  the next ones until two future sprints remain, each `<n> days` long as
+  `sprint_field` says and starting the day after the last one's final day
+  (its start date plus its duration). The mutation
+  replaces the whole configuration, so send every existing iteration,
+  completed ones included, with its `id` (an iteration left out is deleted
+  and its items lose their Sprint); give the new ones no `id`. `startDate`
+  is the first existing iteration's start, and `duration` the configured
+  length:
+
+  ```bash
+  gh api graphql -f query='mutation { updateProjectV2Field(input: {
+    fieldId: "<sprint field id>",
+    iterationConfiguration: {startDate: "<first start>", duration: <n>,
+      iterations: [
+        {id: "<existing id>", title: "<its title>", startDate: "<its start>", duration: <its duration>},
+        {title: "<next title>", startDate: "<next start>", duration: <n>}]}}) {
+    projectV2Field { ... on ProjectV2IterationField { configuration {
+      iterations { id title startDate } completedIterations { id title } } } } } }'
+  ```
+
+  GitHub offers no way to add an iteration without replacing the rest, and
+  a person can still change the field in the Project settings between the
+  keeper's read and its write, so the keeper makes the write recoverable:
+  1. Save every board item's Sprint (item id, iteration id, title, start
+     date) to a file in its scratchpad, from
+     `gh project item-list "<project_number>" --owner "<project_owner>" --limit 3000 --format json`
+     (the field's key is its name with the first letter lowercased).
+  2. Read the configuration, then send the mutation built from that read at
+     once.
+  3. Check that the result lists exactly the ids sent plus the new ones.
+     If it does not, stop adding. Read the configuration and the items
+     again: for every item whose saved iteration id is gone, set its Sprint
+     to the iteration that now has the same start date, recreating that
+     iteration first (as above, from a fresh read) when none has it. Then
+     tell the owner what changed and which items were reset, in case the
+     person's change was meant to remove a sprint.
 
 ## Issue spec
 
@@ -283,7 +371,10 @@ so it carries:
   in the background when a review takes minutes (a slash command such as a
   review plugin's is typed by a person; an agent cannot invoke it), naming the tool-unavailable path for any reviewer that
   is missing; the `required_checks`; resolved threads; the PO's acceptance
-  gate (below); merge with `integration_merge`, unless that merge is a
+  gate (below); the merge with `integration_merge`, as one plain command
+  with nothing else on the line (no `cd`, `&&`, `;` or pipe),
+  `gh pr merge <n> --repo <owner/repo> --<integration_merge> --match-head-commit <full 40-character sha>`,
+  and its result checked with a separate command, unless that merge is a
   Production step, which goes to the PO ("Promoting to Production");
   evidence from
   `test_environment`, or an explicit note that it has not picked the change
@@ -297,14 +388,30 @@ so it carries:
   paths, missing tools, commit email). Keep them in the brief, not here.
 - **Reporting**: the wrap-up is a recap only, never a question or buttons for
   the owner. Decisions, approvals and access needs go to the PO with
-  SendMessage (`to`: the PO's session id). Reports the owner reads are in
-  `report_language`.
+  SendMessage (`to`: the PO's session id). A sub-session waiting for the PO
+  (an answer, the acceptance "merge", a Production step) ends its turn with
+  a recap only and never marks the turn as blocked or waiting on the user,
+  since the app would then show the owner a session that needs them.
+  Reports the owner reads are in `report_language`.
 
 ## Coordinating
 
 - When a sub-session ends a turn, read its report, check it against GitHub
   (PR state and checks, issue comments) and reply in the same turn. Never
   leave it waiting on the owner.
+- When the app shows a sub-session as waiting on the user, the PO acts, not
+  the owner. It first reads that session's recent transcript and the GitHub
+  state of its task (PR, checks, latest protocol comment). If the wait is
+  stale or already resolved (for example the PO's "merge" for the current
+  head is already recorded in a `PO acceptance:` comment), the PO lets it
+  continue or tells it the next step; a session still waiting for "merge"
+  gets the acceptance gate below. If it is a question, the PO answers it
+  with SendMessage. If it is an action the session's permission checks
+  refused or prompted for, the PO tells the session to drop that action and
+  follows the bullet below on actions a sub-session's permission checks
+  refused (a refused merge follows the allow-rule bullet instead): one
+  decision in the PO chat, and the PO runs
+  only the approved steps. The PO never sends the owner into that session.
 - Acceptance gate before merge: when the required checks are green and the
   threads are resolved, the sub-session sends the PO a short summary (what
   users will see change, evidence against each acceptance item of the issue,
@@ -313,8 +420,9 @@ so it carries:
   money, security, migration or Production-config changes the PO also asks
   for a second independent reviewer, run by the sub-session. Code review
   stays with the independent reviewers; the PO does not review diffs. The PO
-  records its answer as a PR comment naming the head it accepted
-  (`PO acceptance: merge at <sha>`), so it survives a restart; if the head
+  records its answer as a PR comment that starts with
+  `PO acceptance: merge at <full 40-character head sha>`, naming the head
+  it accepted, so it survives a restart; if the head
   changes after that, the gate is repeated for the new head.
 - Answer technical and routine questions yourself (for example: no
   authorized test-environment key exists, so report the deployed revision
@@ -347,8 +455,22 @@ so it carries:
   `integration_branch` after the PO's "merge" ("Merge Without Review"). The
   fix is the machine-level allow rule in `setup_guide` (the integration
   merge method plus `--match-head-commit` only), which the owner approves
-  once per machine. Until it exists, the owner approves each merge in that
-  session. The PO never runs the merge itself in its place, except a merge
+  once per machine. On the first refused merge on a machine without it, the
+  PO asks the owner once, in the PO chat, to approve adding the entries
+  `setup_guide` lists (the allow entries together with their `ask` guards,
+  never an allow entry without them) to the machine's user settings; only
+  after that approval does the PO add them, in its own session, and no
+  sub-session edits permission settings. The merge waits for the rule, then
+  the PO tells the session to retry it; there are no per-merge approvals
+  inside sub-sessions. A merge still refused with the rule in place does not
+  match it (a compound command, a moved head, another flag or merge
+  method): the PO has the
+  session repeat the acceptance gate for its current head and retry the
+  plain command from the brief's Process, still with `integration_merge`
+  (never another merge method to get past the rule), and if that is
+  refused too, the PO takes the rule
+  back to the owner as a setup problem in the PO chat. The
+  PO never runs the merge itself in its place, except a merge
   that is itself a Production step (see "Promoting to Production"), which
   only the PO runs, after the owner's approval.
 - Protocol comments are parsed: write `session=<id>` with nothing glued to
@@ -462,8 +584,8 @@ merge it. Once the PR passes the acceptance gate, the sub-session posts
 `handoff:` to the PO; the PO shows the owner the PR, the accepted head and
 the deploy checks below, and after the owner approves in the PO chat it
 claims the issue, records the approval in the `PO acceptance:` comment,
-merges with `integration_merge` and `--match-head-commit <accepted sha>`,
-and verifies the deploy as below. The PR and those checks are the runbook;
+merges with `integration_merge` and `--match-head-commit <accepted sha>`
+(the same one plain command as in the brief's Process), and verifies the deploy as below. The PR and those checks are the runbook;
 a deploy that needs other steps gets a runbook file as in step 1 above.
 
 - Know what a merge into `production_branch` does before asking the owner.

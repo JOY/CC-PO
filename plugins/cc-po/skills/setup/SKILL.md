@@ -100,7 +100,15 @@ gh project field-list "<number>" --owner "<owner>" --format json
 
 From the field list take the Product Line field (`product_line_field`) and
 its option ids (the Lines table), and the Priority field
-(`priority_field`). A field the board does not have, or a board that cannot
+(`priority_field`). When the board has an iteration field for sprints, ask
+whether the POs should keep sprints; if yes, read its length and write
+`sprint_field` as `<field id>; <field name>, <n> days`:
+
+```bash
+gh api graphql -f query='{ node(id: "<iteration field id>") { ... on ProjectV2IterationField { name configuration { duration } } } }'
+```
+
+A field the board does not have, or a board that cannot
 be read, leaves the key out (its default is `none`), and each line then has
 `none` as its option id. Where the owner is an organization, also read its Issue Types
 and issue fields (skip them when the query fails or returns nothing):

@@ -25,6 +25,7 @@ skill.
 - product_line_field: PVTSSF_exampleLineField (options in Lines)
 - priority_field: `PVTSSF_examplePriorityField`; Urgent `a1`, High `b2`,
   Normal `c3`, Low `d4`
+- sprint_field: `PVTIF_exampleSprintField`; Sprint, 7 days
 - bot_owned_fields: none
 
 ## Lines

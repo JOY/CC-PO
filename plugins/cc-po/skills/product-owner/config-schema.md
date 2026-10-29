@@ -48,6 +48,7 @@ node "<this skill's directory>/check-config.mjs" docs/product-owner-config.md
 | `project_url` | derived | The Project's URL, for people. |
 | `product_line_field` | `none` | Node id (`PVTSSF_...`) of the single-select board field that holds the line. With `none`, the `line:*` label alone tags the line. |
 | `priority_field` | `none` | Node id of the board Priority field and its options, as `<field id>; Urgent <id>, High <id>, Normal <id>, Low <id>`. |
+| `sprint_field` | `none` | The board iteration field that holds the sprint, as `<field id>; <field name>, <n> days` (for example `PVTIF_...; Sprint, 7 days`). Its iterations are read live from the field, never copied here as the source. With `none`, the PO keeps no sprints (see "Sprints" in the `product-owner` skill). |
 | `bot_owned_fields` | `none` | Board fields a bot sets from claim comments, never by hand, and the bot that does it. With `none`, sessions set Status, Executor and Session ID by hand as the tracking document says. |
 
 ## Lines

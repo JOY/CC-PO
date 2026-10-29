@@ -32,7 +32,15 @@ committed file, `docs/product-owner-config.md`.
   dispatch workflows.
 - **A GitHub Project** for the backlog, with Status and Priority fields and,
   ideally, a single-select Product Line field with one option per line.
+  An iteration field is optional: with one, the POs keep sprints.
 - **Node.js** (optional) to run the config checker.
+- **GitHub connector** (optional). The plugin lists GitHub's remote MCP
+  server (`https://api.githubcopilot.com/mcp/`) under the name `github`. On
+  claude.ai and Cowork it appears on the plugin's Connectors tab, where each
+  user connects their own account; Claude Code loads it with the plugin.
+  The skills use `gh` and never depend on it. If you also have the official
+  `github` plugin, both declare a server named `github`, so you may see it
+  twice; keep either one.
 - Optional reviewers. The skills run whatever your config lists in
   `local_reviews`; without any, sessions use a fresh-context subagent
   review. The [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc)
@@ -141,6 +149,11 @@ Adjust it if your integration branch uses another merge method.
   after the owner approves them in the PO chat. Session safety checks accept
   only the user's own words in a session, so an approval relayed by the PO
   would not unlock a sub-session.
+- **Sprints (optional).** When the config names an iteration field
+  (`sprint_field`), the PO sets each handed-out issue's sprint, moves the
+  line's unfinished items into the new sprint at its first check-in of each
+  sprint with a one-line done/carried count for the owner, and adds
+  iterations before they run out (one PO, the sprint keeper, adds them).
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,
