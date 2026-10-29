@@ -1,4 +1,4 @@
-# CC-PO: a Product Owner workflow for Claude Code
+# Product Owner workflow for Claude Code
 
 CC-PO lets one person run a repository through Claude Code sessions without
 reading code. Each product line gets one **Product Owner (PO)** session. The
