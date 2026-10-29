@@ -51,13 +51,17 @@ The PO works continuously: it always coordinates, brainstorms and plans to
 define the backlog for the sub-sessions, so the next task is ready before a
 sub-session finishes.
 
-- Keep `sub_sessions_normal` sub-sessions normally and `sub_sessions_max` at
-  most. Count every sub-session that is not archived, idle and paused ones
-  included. When one finishes (its claim ended with `handoff:`, `release:`
-  or `done:`), archive it and start the next authorized task from the
-  backlog in the same turn. A `handoff:` to the PO for approved Production
-  steps is not a finish: that sub-session stays (idle, still counted) until
-  the PO posts `done:` or hands the issue back to it.
+- Keep at least `sub_sessions_normal` sub-sessions running and
+  `sub_sessions_max` at most. Count every sub-session that is not archived,
+  idle and paused ones included, and every queued dispatch. In each turn
+  the owner types, fill the line up to `sub_sessions_max` with the next
+  ready backlog issues ("Starting a sub-session"), because check-in turns
+  cannot start sessions. When one
+  finishes (its claim ended with `handoff:`, `release:` or `done:`), archive
+  it and start the next authorized task from the backlog in the same turn,
+  or queue it when that turn cannot start one. A `handoff:` to the PO for
+  approved Production steps is not a finish: that sub-session stays (idle,
+  still counted) until the PO posts `done:` or hands the issue back to it.
 - Pausing saves usage; it does not free a slot, because paused sessions
   still count. A paused session posts an ordinary comment starting
   `checkpoint: session=<id>` saying it is paused (where the work stands,
@@ -98,15 +102,16 @@ sub-session finishes.
   catalog change or a roadmap commitment goes to the owner, whoever asks.
   Urgent work (a security exposure, an outage, a Production blocker) goes
   first: if the line is at `sub_sessions_max`, free a slot as described
-  above before starting it. Urgency never adds authority; approvals still
-  apply.
+  above before starting it (in a turn that cannot start a session, queue it
+  at the top Priority, "Starting a sub-session"). Urgency never adds
+  authority; approvals still apply.
 - While sub-sessions have work in flight, keep a self check-in where the
   runtime allows one, about every `check_in_minutes` minutes, until the line
   has no authorized work left. Each check-in is coordination: read reports,
-  look at the CI of PRs that are waiting, nudge their owners, refill free
-  slots, refine the backlog ("Refine: is it ready?") and keep the sprints
-  ("Sprints") where the config sets them. It ends with the
-  digest ("Check-in digest"). It is not a tight CI poll.
+  look at the CI of PRs that are waiting, nudge their owners, queue the
+  dispatches for free slots, refine the backlog ("Refine: is it ready?")
+  and keep the sprints ("Sprints") where the config sets them. It ends with
+  the digest ("Check-in digest"). It is not a tight CI poll.
 
 ## Lines and names
 
@@ -126,8 +131,9 @@ GitHub, relay the owner's approvals word for word, and keep the board honest.
 Does not: investigate root causes, read code beyond a quick ownership or
 duplicate check, implement fixes, merge another session's PR, or grant any
 authority the owner has not given. When a problem is assigned to the line,
-start a session at once with what is already known (run link, error line,
-owner issue) and let it investigate.
+start a session at once (or queue it, "Starting a sub-session") with what
+is already known (run link, error line, owner issue) and let it
+investigate.
 
 One exception: Production, secret and credential steps are run by the PO.
 The sub-session prepares an exact runbook; the PO shows the owner the
@@ -349,6 +355,41 @@ Decision: <decision id> (only when an owner decision applies)
 - Leave no section blank: write `TBD: <why> (<who decides>)`.
 
 ## Starting a sub-session
+
+Making a session the PO of a line is the owner's standing instruction to
+start the sub-sessions the line's authorized work needs. The PO starts them
+itself and never asks the owner to: no "start them?" in text or in the
+wrap-up box, and never a suggested-session card by choice.
+
+- Start each one with `start_session`, initiation `user_asked`, whenever
+  the app allows a start: in a turn the owner typed in the PO chat on the
+  desktop app, whatever that message is about.
+- The app refuses a start in a turn that a scheduled check-in, another
+  session's message, a CI event or a Remote Control message began. There
+  the PO queues the dispatch: it posts the finished brief on the issue as
+  an ordinary comment starting `PO queued:`, leaving out what the
+  repository's rules keep off issues, so the queue survives a restart and
+  the digest reads it from GitHub. Queued dispatches take free slots like
+  sessions: running sessions plus queued dispatches stay within
+  `sub_sessions_max`. A queued issue is taken: no other dispatch starts it.
+  To drop one, the PO posts `PO queued: cancelled` on the issue.
+- At the owner's next desktop turn, whatever that message is about, the PO
+  first applies what that message says about a queued dispatch (cancels
+  it, or updates its brief), then starts the remaining queued dispatches
+  without asking, highest board Priority first, then answers the rest of
+  the message. Before each start it checks the cap, that the issue is
+  still open, unclaimed and unblocked, that no live session already works
+  it (`list_sessions`), and the brief's Environment part. A dispatch that
+  fails a check other than the cap is dropped with `PO queued: cancelled`
+  and the reason, and its issue returns to the backlog. A start refused in
+  an owner's desktop turn (a tool error) stays queued for the next one.
+- A card (initiation `own_initiative`) is the last resort, only for a queued
+  dispatch that cannot wait for the owner's next desktop turn: propose every
+  queued card in one turn, re-send the ones not yet started at the bottom
+  of each later turn that reports to the owner (cards scroll out of view;
+  dismiss the old card before re-sending it), and dismiss any open card for
+  a dispatch before starting that dispatch directly, so it never starts
+  twice.
 
 Give each sub-session its own issue and files. Each sub-session decides for
 itself whether to use in-process subagents (for example parallel research or
@@ -671,9 +712,12 @@ from memory, and skip a section that is empty:
    Production step), with what each one waits for.
 5. **Blocked**: `release: ... status=Blocked` and blocked issues (Triage
    step 4), with who can clear each one; what waits on the owner first.
-6. **Up next**: the top 3 ready, unclaimed, unblocked issues by board
-   Priority.
-7. **Stale**: claims with no comment naming their session, no push and no PR
+6. **Queued to start**: open issues whose latest `PO queued:` comment is
+   not `PO queued: cancelled` and has no claim after it ("Starting a
+   sub-session"); they start at the owner's next desktop turn.
+7. **Up next**: the top 3 ready, unclaimed, unblocked and unqueued issues
+   by board Priority.
+8. **Stale**: claims with no comment naming their session, no push and no PR
    update for the threshold `tracking_doc` sets, else 72 hours.
 
 The digest reports; it does not ask. A decision the owner must make goes
