@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkConfig, parseConfig } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
+import { checkConfig, parseConfig, parseScopes } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
@@ -165,4 +165,33 @@ test('a sprint field needs an iteration field id, a name and a length', () => {
 test('a config with no lines is invalid', () => {
   const { errors } = checkConfig(minimal.slice(0, minimal.indexOf('| Line')));
   assert.match(errors.join('\n'), /Lines table has no rows/);
+});
+
+test('sprint review keys are checked', () => {
+  const err = (text) => checkConfig(text).errors.join('\n');
+  const sprint = '- sprint_field: PVTIF_x; Sprint, 7 days';
+  const review = (extra) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${extra}`);
+  const on = review(`${sprint}\n- sprint_review: on (owner, #1)\n- line_scopes: \`line:core\`: \`src/core\`, \`cmd/\` (not docs)\n- sprint_review_report: \`docs/reviews/<YYYY-MM-DD>-<line>-<sprint>.html\`; HTML`);
+  assert.deepEqual(checkConfig(on), { errors: [], warnings: [] });
+  assert.deepEqual(parseScopes('`line:core`: `src/core`; line:web apps/web'), [
+    { label: 'line:core', paths: '`src/core`' },
+    { label: 'line:web', paths: 'apps/web' },
+  ]);
+  assert.deepEqual(checkConfig(review('- sprint_review: off')).errors, []);
+  assert.match(err(review('- sprint_review: maybe')), /sprint_review must be on or off/);
+  assert.match(err(review('- sprint_review: on-hold')), /sprint_review must be on or off/);
+  assert.match(err(review('- sprint_review: on')), /sprint_review is on but sprint_field is none/);
+  assert.match(err(review(`${sprint}\n- sprint_review: on\n- sprint_review_report: none`)), /sprint_review_report is none/);
+  assert.match(err(review('- sprint_review_report: docs/review.md; Markdown')), /needs a path template with <YYYY-MM-DD> and <line>/);
+  for (const outside of ['/tmp/<YYYY-MM-DD>-<line>.md', '../out/<YYYY-MM-DD>-<line>.md', 'C:/r/<YYYY-MM-DD>-<line>.md', 'notes <YYYY-MM-DD> <line>']) {
+    assert.match(err(review(`- sprint_review_report: ${outside}; Markdown`)), /path must be relative to the repository/);
+  }
+  assert.match(err(review('- sprint_review_report: docs/<YYYY-MM-DD>-<line>.md')), /needs a format after the path/);
+  assert.match(err(review('- sprint_review_report: docs/<YYYY-MM-DD>-<line>.md;  ')), /needs a format after the path/);
+  assert.match(err(review('- line_scopes: src/core')), /line_scopes entry 1 must start with a line label/);
+  assert.match(err(review('- line_scopes: line:web: apps/web')), /line_scopes entry 1: its label is not in the Lines table/);
+  assert.match(err(review('- line_scopes: line:core src; line:core lib')), /line_scopes entry 2: same label as entry 1/);
+  const unscoped = checkConfig(review(`${sprint}\n- sprint_review: on`));
+  assert.deepEqual(unscoped.errors, []);
+  assert.match(unscoped.warnings.join('\n'), /Lines row 1 has a PO session but no line_scopes entry/);
 });

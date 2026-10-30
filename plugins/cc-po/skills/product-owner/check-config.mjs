@@ -24,7 +24,19 @@ export const KNOWN = new Set([
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
   'promotion_reviews', 'agent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
+  'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
+
+const LABEL = /^line:[a-z0-9][a-z0-9-]*$/;
+
+// parseScopes splits line_scopes into { label, paths } entries; label is
+// null for an entry that does not start with a line label.
+export function parseScopes(value) {
+  return value.split(';').map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+    const m = entry.match(/^`?(line:[a-z0-9][a-z0-9-]*)`?:?\s+(\S.*)$/);
+    return m ? { label: m[1], paths: m[2] } : { label: null, paths: entry };
+  });
+}
 
 const LINES_HEADER = ['line', 'label', 'product line option id', 'po session'];
 
@@ -190,7 +202,7 @@ export function checkConfig(text) {
     const row = `Lines row ${i + 1}`;
     if (!line) errors.push(`${row} has no line name`);
     if (!po) errors.push(`${row} has no PO session (write the session title, or none and who decides)`);
-    if (!/^line:[a-z0-9][a-z0-9-]*$/.test(label ?? '')) errors.push(`${row}: label must look like line:<slug>`);
+    if (!LABEL.test(label ?? '')) errors.push(`${row}: label must look like line:<slug>`);
     if (labels.has(label)) errors.push(`${row}: same label as row ${labels.get(label)}`);
     else labels.set(label, i + 1);
     if (option === undefined || option === '') errors.push(`${row}: option id is empty (write none)`);
@@ -198,6 +210,46 @@ export function checkConfig(text) {
       errors.push(`${row}: has an option id but product_line_field is none`);
     }
   });
+
+  // The sprint review runs at a sprint's end, audits each line's scope and
+  // writes one dated report per line and sprint.
+  const review = values.sprint_review;
+  const reviewOn = review !== undefined && /^on(?![\w-])/i.test(review);
+  if (review !== undefined && !/^(on|off)(?![\w-])/i.test(review)) errors.push('sprint_review must be on or off');
+  if (reviewOn && (!values.sprint_field || isNone(values.sprint_field))) errors.push('sprint_review is on but sprint_field is none');
+  const scopes = values.line_scopes;
+  const scoped = new Map();
+  if (scopes && !isNone(scopes)) {
+    parseScopes(scopes).forEach(({ label }, i) => {
+      const entry = `line_scopes entry ${i + 1}`;
+      if (!label) errors.push(`${entry} must start with a line label (<label>: <paths>)`);
+      else if (!labels.has(label)) errors.push(`${entry}: its label is not in the Lines table`);
+      else if (scoped.has(label)) errors.push(`${entry}: same label as entry ${scoped.get(label)}`);
+      else scoped.set(label, i + 1);
+    });
+  }
+  if (reviewOn) {
+    lines.forEach(({ label, po }, i) => {
+      if (LABEL.test(label ?? '') && po && !isNone(po) && !scoped.has(label)) {
+        warnings.push(`Lines row ${i + 1} has a PO session but no line_scopes entry, so its sprint review audits no scope`);
+      }
+    });
+  }
+  const report = values.sprint_review_report;
+  if (report !== undefined && isNone(report) && reviewOn) errors.push('sprint_review is on but sprint_review_report is none');
+  if (report !== undefined && !isNone(report)) {
+    const [rawPath, ...rest] = report.split(';');
+    const path = rawPath.replace(/`/g, '').trim();
+    if (!path.includes('<YYYY-MM-DD>') || !path.includes('<line>')) {
+      errors.push('sprint_review_report needs a path template with <YYYY-MM-DD> and <line> (<path template>; <format>)');
+    }
+    // The report is committed through a PR, so it must land inside the
+    // repository: a relative path with no .. segment and no spaces.
+    if (/\s/.test(path) || /^([A-Za-z]:|[\\/~])/.test(path) || path.split(/[\\/]/).includes('..')) {
+      errors.push('sprint_review_report path must be relative to the repository, without .. or spaces');
+    }
+    if (!rest.join(';').trim()) errors.push('sprint_review_report needs a format after the path (<path template>; <format>)');
+  }
 
   for (const pattern of SECRET_PATTERNS) {
     if (pattern.test(text)) errors.push(`the config holds something shaped like a credential (${pattern}); remove it`);

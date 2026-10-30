@@ -108,6 +108,15 @@ whether the POs should keep sprints; if yes, read its length and write
 gh api graphql -f query='{ node(id: "<iteration field id>") { ... on ProjectV2IterationField { name configuration { duration } } } }'
 ```
 
+With sprints, also ask whether each line's PO should run a sprint review at
+the end of every sprint (a review of the sprint's work and a read-only audit
+of the line's code). If yes, write `sprint_review: on`, ask which paths each
+line with a PO owns and write them as `line_scopes`
+(`` `line:<slug>`: <paths>; `line:<slug>`: <paths> ``), and ask where the
+reports go and in what format (`sprint_review_report`; the default is a
+Markdown file per line and sprint under `docs/sprint-reviews/`). Otherwise
+leave `sprint_review` out (its default is `off`).
+
 A field the board does not have, or a board that cannot
 be read, leaves the key out (its default is `none`), and each line then has
 `none` as its option id. Where the owner is an organization, also read its Issue Types

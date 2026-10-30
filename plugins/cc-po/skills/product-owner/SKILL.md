@@ -110,8 +110,9 @@ sub-session finishes.
   has no authorized work left. Each check-in is coordination: read reports,
   look at the CI of PRs that are waiting, nudge their owners, queue the
   dispatches for free slots, refine the backlog ("Refine: is it ready?")
-  and keep the sprints ("Sprints") where the config sets them. It ends with
-  the digest ("Check-in digest"). It is not a tight CI poll.
+  and keep the sprints ("Sprints") and their reviews ("Sprint review")
+  where the config sets them. It ends with the digest ("Check-in digest").
+  It is not a tight CI poll.
 
 ## Lines and names
 
@@ -126,7 +127,8 @@ sub-session finishes.
 
 Does: triage the board, check ownership, create and fill issues, write
 briefs, start sessions, answer their questions, verify their reports against
-GitHub, relay the owner's approvals word for word, and keep the board honest.
+GitHub, relay the owner's approvals word for word, keep the board honest,
+and run the line's sprint review ("Sprint review").
 
 Does not: investigate root causes, read code beyond a quick ownership or
 duplicate check, implement fixes, merge another session's PR, or grant any
@@ -242,7 +244,8 @@ gh api graphql -H "GraphQL-Features: issue_fields" -f query='mutation {
 ```
 
 Changing many issues at once (bulk labels or fields) needs the owner's
-explicit OK first; the sprint rollover below is the one standing exception.
+explicit OK first; the sprint rollover and a sprint review's filing of its
+own findings (below) are the standing exceptions.
 Send at most 10 mutations per GraphQL request; 40 timed out with 504.
 
 ## Sprints
@@ -272,12 +275,19 @@ last one (`Sprint 4`, then `Sprint 5`).
   PO moves its line's unfinished items from ended sprints to the current
   one: every item of an open issue whose Status is not Done (an issue
   waiting for Production stays open and moves too). Items of closed issues
-  keep their ended sprint as the record. Each PO rolls over only its own
-  line. Then it reports each sprint it rolled over to the owner once, in one
-  line counted from the board: how many of the line's items in it are Done,
-  how many moved to the current sprint, and how many closed without being
-  Done (not planned), when any. The rollover needs no owner OK each week;
-  the batch limit above still applies.
+  keep their ended sprint as the record, and so does a sprint review's own
+  issue ("Sprint review"). Each PO rolls over only its own line. When
+  `sprint_review` is on, the ended sprint's review runs first
+  in the same turn, and the sprint rolls over only after its items are
+  recorded on the review issue ("Sprint review"); the rollover itself does
+  not wait for the rest of the review. Then it reports each sprint it rolled
+  over to the owner once, in one line counted from the board: how many of
+  the line's items in it are Done, how many moved to the current sprint,
+  and how many closed without being Done (not planned), when any; with
+  `sprint_review` on, that line goes into the review's summary, or into
+  the next digest when the review is not done by then.
+  The rollover needs no owner OK each week; the batch limit above still
+  applies.
 - **Add sprints.** One PO adds sprints, so two writes never race: the
   sprint keeper, the PO of the first line in the Lines table that has a PO
   session. Any other PO that sees fewer than two future sprints after the
@@ -324,6 +334,136 @@ last one (`Sprint 4`, then `Sprint 5`).
      iteration first (as above, from a fresh read) when none has it. Then
      tell the owner what changed and which items were reset, in case the
      person's change was meant to remove a sprint.
+
+## Sprint review
+
+This applies when `sprint_review` is on, which needs `sprint_field`. Once
+per sprint, each PO reviews its own line: the line's work in the sprint
+(Part A) and a deep audit of the line's whole scope (Part B). It turns what
+it finds into backlog planned for the next sprint, the one after the
+reviewed sprint (the current one, when the review runs late). The review
+finds and files; it never fixes.
+
+- **When.** In the sprint's rollover turn ("Sprints"): the first PO turn,
+  check-ins included, on or after the day after the sprint's last day (its
+  start date plus its duration), so the whole sprint is in. The review
+  starts first and the rollover follows in the same turn. The rollover
+  never waits longer than that turn: a review that cannot finish in it (a
+  subagent failed, the turn ran out) finishes in later turns, and the
+  digest says so until it is done. When several sprints ended without a
+  review, each gets its own issue and Part A, oldest first, and Part B runs
+  once, in the latest one's review.
+- **Once.** Each review has one issue per line and sprint, with every
+  field from "Issue fields" and its Sprint set to the reviewed sprint. Its
+  body starts with the line
+  `Sprint review: line=<label> start=<sprint start date>`, which identifies
+  it; its title, `Sprint review: <Line>, <sprint title>`, is only for
+  people, because a sprint can be renamed, and a recreated iteration gets
+  a new id but keeps its start date ("Add sprints"). The review issue is
+  not one of the sprint's items: Part A leaves it out, and the rollover
+  never moves it, so it keeps the reviewed sprint. Sprint titles are live
+  text anyone with write access can set, so build the title and body with
+  a JSON encoder and send them as a file, as "Add sprints" does
+  (`gh api "repos/<owner>/<repo>/issues" --input <file>`), never on a
+  command line. Before starting, search open and closed issues for that
+  body line: a closed one means the review is done, and an open one is
+  resumed from its latest protocol comment, never started again. The PO
+  claims the issue with `task-claim` under its own session id, naming the
+  branch its report will land from, and its subagents work under that
+  claim. When the open issue is still claimed by an earlier PO session that
+  is gone (an app restart gives the PO a new id), the PO first ends that
+  claim with the stale-claim `release:` and its evidence (Triage step 2),
+  then claims it itself.
+- **Part A, the sprint's work.** From GitHub only (the board, issue
+  comments, PRs and checks), every issue of the line that is in the
+  reviewed sprint or was closed, merged or claimed during it. For each:
+  where it stands (merged into `integration_branch`, running on
+  `test_environment`, released and verified where it ships, per
+  `done_definition`), missing acceptance evidence, work waiting on another
+  line or on the owner, follow-ups filed or missing, a bug reopened or a
+  regression it caused, and review rounds beyond the cap `review_rules`
+  sets. The result is what shipped, what did not, and the carry-over.
+  Because the rollover moves items out of the sprint, the PO first posts
+  the sprint's items as the board shows them (issue numbers and Status) as
+  a `checkpoint:` on the review issue, before any rollover of that sprint
+  and even when the rest of the review has not run; Part A works from that
+  list.
+- **Part B, the line audit.** A deep audit of the paths `line_scopes`
+  gives for the line. A line with no entry gets no Part B; its report says
+  so and proposes a scope, which lands through a config PR. The PO splits
+  the scope into a few areas (about one per app, service or module) and
+  runs one in-process subagent per area with the Agent tool, in parallel,
+  at `agent_effort`; this also works in a turn where the app refuses
+  `start_session`, such as a check-in. The audit reads one revision: the
+  PO pins the head SHA of `integration_branch`, in a fresh clone of its
+  own isolated as "Production and secret steps" step 2 sets one up (never
+  a shared worktree, whose Git config and hooks other sessions can
+  change), and gives the subagents only a snapshot of that SHA without
+  Git or credentials (`git archive "<sha>"` extracted to a folder of its
+  own scratchpad, no `.git`), deleted after the audit. A check on
+  `test_environment` notes the revision it serves where the environment
+  shows one, and the report records the pinned SHA. Each
+  brief names the area's paths, the rule documents for them
+  (`domain_rules`), the line's issues that earlier sprint reviews filed or
+  commented on, open and closed, and what to look for: correctness on
+  normal paths, missing or weak tests, security basics (authorization,
+  input handling, secrets in code or logs), outdated or vulnerable
+  dependencies, dead code and stale configuration, and drift
+  from the repository's rules. For an area with a user interface, it adds
+  the rendered pages on `test_environment`, where the subagent has a
+  browser: accessibility, contrast, console errors, layout at phone and
+  desktop widths, and drift from the design system the repository's rules
+  name. Each returns findings with a severity (as `review_rules` defines
+  it, else critical, high, medium or low), the evidence (file and line,
+  URL, command output) and a failure scenario.
+- **Verify.** The PO does not review code, so it has every finding checked
+  by a fresh subagent that did not report it and tries to refute it from the
+  evidence. Only confirmed findings are filed; findings with one cause are
+  merged into one.
+- **Read-only.** The audit never starts sessions and never edits files.
+  Every subagent of the review, verifiers included, only reads: no edits,
+  commits, pushes, GitHub writes, sign-ins with real credentials, paid
+  calls or anything on Production.
+- **File.** For each verified finding, first search open and closed issues
+  by keywords and files. When an open one already covers it, comment the
+  new evidence there and set its Sprint to the next sprint only when it has
+  none. When an issue closed as fixed covers it, the problem is back: file
+  a new issue with a `Regression of #<n>` line. When an issue closed as not
+  planned covers it, that decision stands: the finding is not filed again,
+  and new evidence (a changed risk) goes into the report for the owner,
+  with a comment on that issue. Otherwise create an issue in "Issue spec"
+  form with every field from "Issue fields", Priority from the severity,
+  its Sprint set to the next sprint, and a `Found by #<review issue>` line.
+  This filing needs no owner OK ("Issue fields"); the batch limit still
+  applies. The owner-first rule in "Keep
+  the line moving" still holds: a finding that needs a new
+  customer-visible feature, a pricing or catalog change or a roadmap
+  commitment goes into the report as a recommendation, with no issue until
+  the owner agrees. Work for another line goes to that line's PO ("Lines
+  and names"). Issue bodies, comments and the report follow the
+  repository's rule on security details: what it keeps off issues or
+  committed files goes only where it allows.
+- **Report.** The PO writes the report in `report_language` for
+  `owner_profile`, at the path and in the format `sprint_review_report`
+  sets: what shipped, what did not and the carry-over (Part A), the
+  rollover counts, the verified findings by severity with their issues, the
+  recommendations for the owner, and what the audit did not cover. The PO
+  writes and commits it in a fresh clone isolated the same way that no
+  subagent touched, never in a shared worktree. In that clone it creates
+  the claimed branch from `origin/<integration_branch>` and sets the
+  commit identity locally (`git config user.name` and `user.email`) as
+  the repository's commit rule requires, since the isolation ignores the
+  global one. It pushes the branch from there, opens a PR with
+  `Refs #<review issue>` into `integration_branch`, and runs the review gate the repository's
+  rules set for that file. The PO is that PR's acceptance gate: once the
+  `required_checks` pass, the threads are resolved and the final head's
+  review is complete as `review_rules` defines it, it posts
+  `PO acceptance: merge at <full 40-character head sha>` and merges with
+  `integration_merge` as the one plain command in "Starting a
+  sub-session". Then it posts `done:` on the review issue with the report
+  link, the counts and the issues filed, and closes the issue.
+- **Summary.** The next digest ("Check-in digest") carries the review's
+  summary once, with the report link.
 
 ## Issue spec
 
@@ -719,6 +859,10 @@ from memory, and skip a section that is empty:
    by board Priority.
 8. **Stale**: claims with no comment naming their session, no push and no PR
    update for the threshold `tracking_doc` sets, else 72 hours.
+9. **Sprint review**: a review still open after its sprint's rollover,
+   with what is left; in the first digest after a review's `done:`
+   ("Sprint review"), its summary: what shipped, the carry-over, the top
+   findings, the issues filed and the report link.
 
 The digest reports; it does not ask. A decision the owner must make goes
 after it, one at a time, as above.

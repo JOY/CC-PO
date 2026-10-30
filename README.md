@@ -154,6 +154,13 @@ Adjust it if your integration branch uses another merge method.
   line's unfinished items into the new sprint at its first check-in of each
   sprint with a one-line done/carried count for the owner, and adds
   iterations before they run out (one PO, the sprint keeper, adds them).
+- **Sprint review (optional).** With `sprint_review: on`, each PO first
+  reviews the ended sprint in that same turn: the line's sprint work,
+  checked against GitHub, and a deep read-only audit of the line's paths
+  (`line_scopes`) by parallel subagents. Verified findings become
+  fully-fielded issues planned into the next sprint, and a dated report
+  (`sprint_review_report`) lands through a pull request, with a summary in
+  the PO's digest.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,

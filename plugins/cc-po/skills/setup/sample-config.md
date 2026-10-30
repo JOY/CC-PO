@@ -83,6 +83,15 @@ skill.
 - check_in_minutes: 30
 - executors: Codex, "Claude Code", Cursor
 
+## Sprint review
+
+- sprint_review: on
+- line_scopes: `line:storefront`: `apps/storefront`, `packages/ui`;
+  `line:payments`: `services/payments`,
+  `.github/workflows/deploy-payments.yml`
+- sprint_review_report:
+  `docs/sprint-reviews/<YYYY-MM-DD>-<line>-<sprint>.md`; Markdown
+
 ## Owner instructions
 
 - Sam (2026-01-15): "Payments changes always get a second reviewer."
