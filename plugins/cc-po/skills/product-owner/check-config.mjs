@@ -6,7 +6,9 @@
 //
 // Exit 0 when the config is valid (warnings may still print), 1 when it has
 // errors, 2 when the file cannot be read.
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REQUIRED = ['owner_name', 'project_owner', 'project_number', 'project_id'];
@@ -24,6 +26,7 @@ export const KNOWN = new Set([
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
   'promotion_reviews', 'agent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
+  'po_watchdog', 'po_check_in_dir',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -143,8 +146,28 @@ export function parseConfig(text) {
 
 const isNone = (v) => /^none\b/i.test(v);
 
-// checkConfig returns { errors, warnings } for the config text.
-export function checkConfig(text) {
+// insideRoot is true when path is root or a folder below it (case-insensitive
+// on Windows, where the file system is).
+export function insideRoot(root, path) {
+  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const rel = relative(fold(resolve(root)), fold(resolve(path)));
+  // A name such as ..state is inside; only a .. segment leaves root.
+  return rel === '' || (rel !== '..' && !/^\.\.[\\/]/.test(rel) && !isAbsolute(rel));
+}
+
+// findRoot returns the nearest folder at or above dir that holds a .git
+// entry (a folder, or the file of a worktree), or undefined. It runs no
+// program: a git found from the checkout's folder could be the checkout's.
+export function findRoot(dir) {
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    if (existsSync(join(at, '.git'))) return at;
+    if (dirname(at) === at) return undefined;
+  }
+}
+
+// checkConfig returns { errors, warnings } for the config text. root, when
+// given, is the repository's root folder, for the checks that need it.
+export function checkConfig(text, { root } = {}) {
   const errors = [];
   const warnings = [];
   const { values, duplicates, lines } = parseConfig(text);
@@ -205,6 +228,20 @@ export function checkConfig(text) {
   }
   if (values.draft_pr_first !== undefined && !/^(yes|no)\b/i.test(values.draft_pr_first)) {
     errors.push('draft_pr_first must be yes or no');
+  }
+  if (values.po_watchdog !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_watchdog)) {
+    errors.push('po_watchdog must be on or off');
+  }
+  // The check-in file is machine state, never committed, so its folder must
+  // be outside the repository: absolute, a drive letter or home (~), and not
+  // under the repository root when the caller knows it.
+  const checkInDir = values.po_check_in_dir;
+  if (checkInDir !== undefined) {
+    if (!/^([A-Za-z]:[\\/]|[\\/]|~([\\/]|$))/.test(checkInDir)) {
+      errors.push('po_check_in_dir must be an absolute or home (~) path outside the repository');
+    } else if (root && insideRoot(root, checkInDir.replace(/^~(?=[\\/]|$)/, homedir()))) {
+      errors.push('po_check_in_dir is inside the repository; use a folder outside it');
+    }
   }
   if (values.production_branch && !isNone(values.production_branch)
       && values.integration_branch && values.production_branch === values.integration_branch) {
@@ -288,7 +325,8 @@ function main(argv) {
     console.error(`cannot read ${path}: ${err.message}`);
     return 2;
   }
-  const { errors, warnings } = checkConfig(text);
+  const { errors, warnings } = checkConfig(text, { root: findRoot(dirname(resolve(path))) });
+
   for (const w of warnings) console.log(`warning: ${w}`);
   for (const e of errors) console.error(`error: ${e}`);
   if (errors.length) {

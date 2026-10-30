@@ -117,6 +117,8 @@ repository has not defined them.
 | `sub_sessions_normal` | `3` | Sub-sessions a PO keeps running. A number, optionally followed by a note. |
 | `sub_sessions_max` | `5` | Hard limit, counting idle and paused sub-sessions. |
 | `check_in_minutes` | `30` | Interval of the PO's self check-in while work is in flight. |
+| `po_watchdog` | `on` | `off` when the POs keep no durable watchdog (an app scheduled task that wakes a PO after a process exit, a restart or a usage-limit stop; see "Durable watchdog" in the `product-owner` skill). |
+| `po_check_in_dir` | `~/.claude/po-state` | The folder on the PO's machine for its check-in file and the owner's watchdog approval. It is outside the repository (an absolute or `~` path, not under the repository root), because the file is machine state that is never committed. |
 | `executors` | `Codex, "Claude Code", Antigravity, Cursor` | Values of `executor=` in claim comments. |
 
 ## Sprint review

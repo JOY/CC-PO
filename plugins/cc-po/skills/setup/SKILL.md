@@ -179,6 +179,9 @@ Tell the user, in `report_language`:
 - what is left: commit the file; to start a Product Owner, open a Claude
   desktop session in this repository and say "You are the Product Owner of
   line <X>", which loads the `product-owner` skill;
+- that each Product Owner asks once, on its first turn on a machine, to
+  create its durable watchdog (an app scheduled task that wakes it after a
+  stop), unless po_watchdog is off;
 - that sub-sessions need the Claude desktop app's Code tab, and that a
   terminal-only Claude Code session can use `task-claim` and the review
   flow but cannot start or message sub-sessions.

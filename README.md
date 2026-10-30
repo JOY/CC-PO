@@ -161,6 +161,14 @@ Adjust it if your integration branch uses another merge method.
   fully-fielded issues planned into the next sprint, and a dated report
   (`sprint_review_report`) lands through a pull request, with a summary in
   the PO's digest.
+- **Durable watchdog.** A check-in scheduled inside a session dies with
+  its process. So each PO also keeps an app scheduled task, built from
+  [`watchdog-template.md`](plugins/cc-po/skills/product-owner/watchdog-template.md),
+  that wakes it every 30 minutes when it has gone quiet (after an app
+  restart, a crash or a usage-limit stop) and points it at its check-in
+  file in `po_check_in_dir`. A run only wakes the PO and archives itself.
+  The app asks the owner to approve the task; the PO asks once per machine.
+  Turn it off with `po_watchdog: off`.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,

@@ -1,11 +1,12 @@
 // Run with: node --test
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkConfig, parseConfig, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
+import { checkConfig, findRoot, insideRoot, parseConfig, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
@@ -205,4 +206,57 @@ test('sprint review keys are checked', () => {
   const unscoped = checkConfig(review(`${sprint}\n- sprint_review: on`));
   assert.deepEqual(unscoped.errors, []);
   assert.match(unscoped.warnings.join('\n'), /Lines row 1 has a PO session but no line_scopes entry/);
+});
+
+test('watchdog keys are checked', () => {
+  const err = (extra, options) => checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${extra}`), options).errors.join('\n');
+  for (const ok of ['- po_watchdog: on', '- po_watchdog: off (owner, 2026-01-15)', '- po_check_in_dir: `~/.claude/po-state`',
+    '- po_check_in_dir: ~', '- po_check_in_dir: /home/sam/po', '- po_check_in_dir: C:\\Users\\sam\\po', '- po_check_in_dir: D:/po']) {
+    assert.equal(err(ok), '', ok);
+  }
+  assert.match(err('- po_watchdog: yes'), /po_watchdog must be on or off/);
+  assert.match(err('- po_watchdog: on-call'), /po_watchdog must be on or off/);
+  for (const inside of ['docs/po-state', '.claude/po-state', '~sam/po', 'C:relative', '$HOME/po', 'none']) {
+    assert.match(err(`- po_check_in_dir: ${inside}`), /po_check_in_dir must be an absolute or home/, inside);
+  }
+  // With the repository root known, an absolute path inside it is refused.
+  const root = join(tmpdir(), 'repo');
+  for (const inside of [root, join(root, '.claude', 'po-state'), join(root, 'docs', '..', 'state'), join(root, '..state')]) {
+    assert.match(err(`- po_check_in_dir: ${inside}`, { root }), /po_check_in_dir is inside the repository/, inside);
+  }
+  for (const outside of [join(tmpdir(), 'repo-state'), join(tmpdir(), 'po-state'), '~/.claude/po-state']) {
+    assert.equal(err(`- po_check_in_dir: ${outside}`, { root }), '', outside);
+  }
+  assert.equal(insideRoot(root, join(root, '..', 'other')), false);
+});
+
+// The watchdog only wakes its PO: its prompt reads one session, messages it
+// and archives its own run.
+test('the watchdog template is wake-only', () => {
+  const text = read('plugins/cc-po/skills/product-owner/watchdog-template.md').replace(/\r\n/g, '\n');
+  const prompt = text.split('\n---\n')[1];
+  assert.ok(prompt, 'the prompt sits between two --- lines');
+  assert.deepEqual([...new Set(prompt.match(/mcp__[a-z_]+__[a-z_]+/g))].sort(), [
+    'mcp__ccd_session_mgmt__archive_session',
+    'mcp__ccd_session_mgmt__get_session',
+    'mcp__ccd_session_mgmt__send_message',
+  ]);
+  for (const placeholder of ['<po session id>', '<po title>', '<owner/repo>', '<owner>', '<language>', '<idle minutes>', '<check-in file>']) {
+    assert.ok(prompt.includes(placeholder), placeholder);
+  }
+});
+
+// The checker finds the repository root without running git, whose lookup
+// could pick a git program planted in the checkout.
+test('the repository root is found by its .git entry', () => {
+  const top = mkdtempSync(join(tmpdir(), 'po-root-'));
+  try {
+    mkdirSync(join(top, 'repo', 'docs'), { recursive: true });
+    writeFileSync(join(top, 'repo', '.git'), 'gitdir: elsewhere\n');
+    assert.equal(findRoot(join(top, 'repo', 'docs')), join(top, 'repo'));
+    assert.equal(findRoot(join(top, 'repo')), join(top, 'repo'));
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+  assert.doesNotMatch(read('plugins/cc-po/skills/product-owner/check-config.mjs'), /child_process/);
 });

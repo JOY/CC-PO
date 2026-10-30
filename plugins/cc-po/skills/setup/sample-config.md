@@ -82,6 +82,8 @@ skill.
 - sub_sessions_max: 5
 - check_in_minutes: 30
 - executors: Codex, "Claude Code", Cursor
+- po_watchdog: on
+- po_check_in_dir: `~/.claude/po-state`
 
 ## Sprint review
 
