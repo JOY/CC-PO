@@ -38,6 +38,23 @@ export function parseScopes(value) {
   });
 }
 
+// outsidePath is true for a path that can leave the repository: absolute,
+// a drive letter or file: URL, or any segment (also after key=) that is ..
+// or starts with home (~) or an environment variable ($HOME, %USERPROFILE%).
+export function outsidePath(path) {
+  return /^([A-Za-z]:|file:|[\\/])/i.test(path)
+    || path.split(/[\\/=]/).some((segment) => segment === '..' || /^[~$%]/.test(segment));
+}
+
+// scopePaths splits an entry's paths and notes into words, without the
+// backticks, quotes and brackets around them, so a path in a note is
+// checked too.
+export function scopePaths(paths) {
+  return paths.split(/[\s,]+/)
+    .map((word) => word.replace(/^[`'"(\[{<]+/, '').replace(/[`'")\]}>:;]+$/, ''))
+    .filter(Boolean);
+}
+
 const LINES_HEADER = ['line', 'label', 'product line option id', 'po session'];
 
 // Shapes of credentials that must never be committed in a config.
@@ -220,12 +237,17 @@ export function checkConfig(text) {
   const scopes = values.line_scopes;
   const scoped = new Map();
   if (scopes && !isNone(scopes)) {
-    parseScopes(scopes).forEach(({ label }, i) => {
+    parseScopes(scopes).forEach(({ label, paths }, i) => {
       const entry = `line_scopes entry ${i + 1}`;
       if (!label) errors.push(`${entry} must start with a line label (<label>: <paths>)`);
       else if (!labels.has(label)) errors.push(`${entry}: its label is not in the Lines table`);
       else if (scoped.has(label)) errors.push(`${entry}: same label as entry ${scoped.get(label)}`);
       else scoped.set(label, i + 1);
+      // The audit reads these paths from a snapshot of the repository, so
+      // each must stay inside it.
+      if (scopePaths(paths).some(outsidePath)) {
+        errors.push(`${entry}: paths must be relative to the repository, without .. (no absolute, drive-letter, home or environment-variable paths)`);
+      }
     });
   }
   if (reviewOn) {
@@ -245,7 +267,7 @@ export function checkConfig(text) {
     }
     // The report is committed through a PR, so it must land inside the
     // repository: a relative path with no .. segment and no spaces.
-    if (/\s/.test(path) || /^([A-Za-z]:|[\\/~])/.test(path) || path.split(/[\\/]/).includes('..')) {
+    if (/\s/.test(path) || outsidePath(path)) {
       errors.push('sprint_review_report path must be relative to the repository, without .. or spaces');
     }
     if (!rest.join(';').trim()) errors.push('sprint_review_report needs a format after the path (<path template>; <format>)');

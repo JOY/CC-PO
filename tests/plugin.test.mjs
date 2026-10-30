@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkConfig, parseConfig, parseScopes } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
+import { checkConfig, parseConfig, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
@@ -191,6 +191,17 @@ test('sprint review keys are checked', () => {
   assert.match(err(review('- line_scopes: src/core')), /line_scopes entry 1 must start with a line label/);
   assert.match(err(review('- line_scopes: line:web: apps/web')), /line_scopes entry 1: its label is not in the Lines table/);
   assert.match(err(review('- line_scopes: line:core src; line:core lib')), /line_scopes entry 2: same label as entry 1/);
+  for (const outside of ['`~/.ssh`', '`../other-repo`', '/etc', '`C:\\Users\\me`', 'c:/r', '`src`, `$HOME/.aws`', '`%USERPROFILE%`',
+    '`src/../../x`', 'src (and `..\\up`)', '`\\\\host\\share`', '<../x>', '{..}', 'path=../x', 'file:///etc/passwd',
+    '`src/$HOME`', '`src/%USERPROFILE%`', 'dir=~/x']) {
+    const text = review(`- line_scopes: \`line:core\`: ${outside}`);
+    assert.match(err(text), /line_scopes entry 1: paths must be relative to the repository/, outside);
+    assert.doesNotMatch(err(text), /\.ssh|other-repo|etc|Users|aws|USERPROFILE|share/, 'no message repeats a path');
+  }
+  for (const inside of ['`apps/*`, `.github/workflows/deploy-*.yml`', 'behavior and data of `apps/web` (D-003)', '`tools/a..b`, `docs/x...`', '`apps/web` (pages at https://example.com/docs)']) {
+    assert.deepEqual(err(review(`- line_scopes: \`line:core\`: ${inside}`)), '', inside);
+  }
+  assert.deepEqual(scopePaths('`src/core`, `cmd/` (not docs); "x"'), ['src/core', 'cmd/', 'not', 'docs', 'x']);
   const unscoped = checkConfig(review(`${sprint}\n- sprint_review: on`));
   assert.deepEqual(unscoped.errors, []);
   assert.match(unscoped.warnings.join('\n'), /Lines row 1 has a PO session but no line_scopes entry/);

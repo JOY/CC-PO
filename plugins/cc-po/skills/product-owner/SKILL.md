@@ -277,10 +277,11 @@ last one (`Sprint 4`, then `Sprint 5`).
   waiting for Production stays open and moves too). Items of closed issues
   keep their ended sprint as the record, and so does a sprint review's own
   issue ("Sprint review"). Each PO rolls over only its own line. When
-  `sprint_review` is on, the ended sprint's review runs first
-  in the same turn, and the sprint rolls over only after its items are
-  recorded on the review issue ("Sprint review"); the rollover itself does
-  not wait for the rest of the review. Then it reports each sprint it rolled
+  `sprint_review` is on, the ended sprints' reviews run first
+  in the same turn, and the rollover runs only after the items of every
+  ended sprint it moves are recorded on that sprint's review issue ("Sprint
+  review"), in a later turn when they cannot all be recorded in this one;
+  the rollover itself does not wait for the rest of the reviews. Then it reports each sprint it rolled
   over to the owner once, in one line counted from the board: how many of
   the line's items in it are Done, how many moved to the current sprint,
   and how many closed without being Done (not planned), when any; with
@@ -348,11 +349,18 @@ finds and files; it never fixes.
   check-ins included, on or after the day after the sprint's last day (its
   start date plus its duration), so the whole sprint is in. The review
   starts first and the rollover follows in the same turn. The rollover
-  never waits longer than that turn: a review that cannot finish in it (a
-  subagent failed, the turn ran out) finishes in later turns, and the
-  digest says so until it is done. When several sprints ended without a
-  review, each gets its own issue and Part A, oldest first, and Part B runs
-  once, in the latest one's review.
+  never waits longer than that turn for the rest of the review: a review
+  that cannot finish in it (a subagent failed, the turn ran out) finishes
+  in later turns, and the digest says so until it is done. When several
+  sprints ended without a review, each gets its own issue and Part A,
+  oldest first, and Part B runs once, in the latest one's review. One
+  rollover moves the items of all of them, so before it the PO creates
+  every missing review issue and posts each one's items `checkpoint:`
+  (Part A), oldest first. The items checkpoints are the one exception to
+  the same-turn rollover: while any ended sprint's checkpoint is not
+  posted (the turn ran out, GitHub failed), the rollover waits for it in a
+  later turn, because moving the items first would lose the record Part A
+  needs, and the report and the digest say why it waited.
 - **Once.** Each review has one issue per line and sprint, with every
   field from "Issue fields" and its Sprint set to the reviewed sprint. Its
   body starts with the line
@@ -366,11 +374,12 @@ finds and files; it never fixes.
   a JSON encoder and send them as a file, as "Add sprints" does
   (`gh api "repos/<owner>/<repo>/issues" --input <file>`), never on a
   command line. Before starting, search open and closed issues for that
-  body line: a closed one means the review is done, and an open one is
-  resumed from its latest protocol comment, never started again. The PO
-  claims the issue with `task-claim` under its own session id, naming the
-  branch its report will land from, and its subagents work under that
-  claim. When the open issue is still claimed by an earlier PO session that
+  body line. Only a review issue whose `done:` carries the report link is a
+  finished review. An open one, or one closed without that `done:`, is
+  resumed from its latest protocol comment (a closed one is reopened
+  first), never started again. The PO claims the issue with `task-claim`
+  under its own session id, naming the branch its report will land from,
+  and its subagents work under that claim. When the open issue is still claimed by an earlier PO session that
   is gone (an app restart gives the PO a new id), the PO first ends that
   claim with the stale-claim `release:` and its evidence (Triage step 2),
   then claims it itself.
@@ -381,8 +390,10 @@ finds and files; it never fixes.
   `test_environment`, released and verified where it ships, per
   `done_definition`), missing acceptance evidence, work waiting on another
   line or on the owner, follow-ups filed or missing, a bug reopened or a
-  regression it caused, and review rounds beyond the cap `review_rules`
-  sets. The result is what shipped, what did not, and the carry-over.
+  regression it caused, and, where `review_rules` limits or triages
+  repeated review rounds (a round cap, or a convergence rule from a given
+  round on), rounds that did not follow that rule. The result is what
+  shipped, what did not, and the carry-over.
   Because the rollover moves items out of the sprint, the PO first posts
   the sprint's items as the board shows them (issue numbers and Status) as
   a `checkpoint:` on the review issue, before any rollover of that sprint
@@ -399,8 +410,43 @@ finds and files; it never fixes.
   own isolated as "Production and secret steps" step 2 sets one up (never
   a shared worktree, whose Git config and hooks other sessions can
   change), and gives the subagents only a snapshot of that SHA without
-  Git or credentials (`git archive "<sha>"` extracted to a folder of its
-  own scratchpad, no `.git`), deleted after the audit. A check on
+  Git or credentials: a folder of its own scratchpad with no `.git`,
+  deleted after the audit. The snapshot holds no symbolic links, because
+  a link merged into the repository could point a subagent at the host's
+  files outside it. So the PO writes it from that clone with links turned
+  into plain files that hold their target text, through an index of its
+  own, into an empty folder it created first, never by extracting
+  `git archive` (which keeps links). In a POSIX shell (Git Bash on
+  Windows):
+
+  ```bash
+  GIT_INDEX_FILE="<scratchpad>/snapshot.index" git -c core.symlinks=false --work-tree="<snapshot>" checkout "<sha>" -- .
+  find "<snapshot>" -type l
+  ```
+
+  In PowerShell 7:
+
+  ```powershell
+  $env:GIT_INDEX_FILE = "<scratchpad>/snapshot.index"
+  try {
+    git -c core.symlinks=false --work-tree="<snapshot>" checkout "<sha>" -- .
+    if ($LASTEXITCODE -ne 0) { throw "snapshot checkout failed" }
+  } finally {
+    Remove-Item Env:GIT_INDEX_FILE
+  }
+  Get-ChildItem -LiteralPath "<snapshot>" -Recurse -Force -Attributes ReparsePoint
+  ```
+
+  Before any subagent reads it, the PO checks that the checkout succeeded
+  and that the link check printed nothing (no symbolic link, and on
+  Windows no reparse point). If either fails (a failed blob fetch, two names that differ only in case
+  on a case-insensitive disk, a link left over), it deletes the snapshot
+  and stops Part B, and the report says why. The PO lists the link records
+  from the clone (`git ls-tree -r "<sha>"` entries with mode `120000`) and
+  gives each brief the ones in its area: each is a plain file holding a
+  target path, which the subagent never opens. Each brief tells the
+  subagent to read only inside the snapshot folder. Submodules come out
+  as empty folders, so the report lists them as not audited. A check on
   `test_environment` notes the revision it serves where the environment
   shows one, and the report records the pinned SHA. Each
   brief names the area's paths, the rule documents for them

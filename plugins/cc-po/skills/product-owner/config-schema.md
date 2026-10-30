@@ -126,7 +126,7 @@ See "Sprint review" in the `product-owner` skill.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `sprint_review` | `off` | `on` when each line's PO reviews its sprint and audits its line's scope at the end of every sprint. Needs `sprint_field`. |
-| `line_scopes` | `none` | The paths each line's audit covers, as `<label>: <paths and notes>` per line, entries separated by `;`, so a note holds no `;` (for example `` `line:core`: `src/core`, `cmd/` ``). Each label is one from the Lines table. A line with no entry gets no audit of its scope. |
+| `line_scopes` | `none` | The paths each line's audit covers, as `<label>: <paths and notes>` per line, entries separated by `;`, so a note holds no `;` (for example `` `line:core`: `src/core`, `cmd/` ``). Each label is one from the Lines table, and every path is relative to the repository, with no `..` segment and no absolute, drive-letter, home or environment-variable path. A line with no entry gets no audit of its scope. |
 | `sprint_review_report` | `` `docs/sprint-reviews/<YYYY-MM-DD>-<line>-<sprint>.md`; Markdown `` | Where the review report goes and its format, as `<path template>; <format>`. The template holds `<YYYY-MM-DD>` (the reviewed sprint's last day) and `<line>` (the label after `line:`), and may hold `<sprint>` (the sprint title in lower case, every run of characters other than `a-z` and `0-9` as one hyphen, no leading or trailing hyphen, so a title can never add a directory). The report is committed through a PR, so the path is relative to the repository, with no `..` segment and no spaces, and a format follows it. It cannot be `none` while `sprint_review` is on. |
 
 ## Owner instructions
