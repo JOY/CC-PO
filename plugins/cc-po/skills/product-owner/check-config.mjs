@@ -8,7 +8,7 @@
 // errors, 2 when the file cannot be read.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REQUIRED = ['owner_name', 'project_owner', 'project_number', 'project_id'];
@@ -41,12 +41,30 @@ export function parseScopes(value) {
   });
 }
 
+const OPENING = /^[`'"(\[{<]+/;
+const CLOSING = /[`'")\]}>]+$/;
+
 // outsidePath is true for a path that can leave the repository: absolute,
-// a drive letter or file: URL, or any segment (also after key=) that is ..
-// or starts with home (~) or an environment variable ($HOME, %USERPROFILE%).
-export function outsidePath(path) {
-  return /^([A-Za-z]:|file:|[\\/])/i.test(path)
-    || path.split(/[\\/=]/).some((segment) => segment === '..' || /^[~$%]/.test(segment));
+// a drive letter or file: URL, or any segment that is .. or starts with home
+// (~) or an environment variable ($HOME, %USERPROFILE%). A path can start
+// where the text does and after a key (=) or a note prefix (:), so each of
+// those starts is checked, past any backticks, quotes or brackets that open
+// it. With urls set, for a note's words (a path to write is never a URL), a
+// URL (https://example.com/docs, also the target of a Markdown link
+// [name](https://...)) that starts where a path could is not a path, except
+// file: and a URL with a .. segment; one in the middle of a path
+// (a/https://../..) is a path.
+export function outsidePath(path, { urls = false } = {}) {
+  const url = /(^|[=:]|\]\()([`'"(\[{<]*)([a-z][a-z0-9+.-]+:\/\/[^\s;]*)/gi;
+  const text = urls
+    ? path.replace(url, (whole, before, opening, link) => (/^file:/i.test(link) || /(^|[\\/])\.\.($|[\\/])/.test(link) ? whole : before + opening))
+    : path;
+  const starts = [text, ...[...text.matchAll(/[=:]/g)].map(({ index }) => text.slice(index + 1))];
+  return starts.some((start) => /^([A-Za-z]:|file:|[\\/])/i.test(start.replace(OPENING, '')))
+    || text.split(/[\\/=:]/).some((raw) => {
+      const segment = raw.replace(OPENING, '').replace(CLOSING, '');
+      return segment === '..' || /^[~$%]/.test(segment);
+    });
 }
 
 // scopePaths splits an entry's paths and notes into words, without the
@@ -146,13 +164,32 @@ export function parseConfig(text) {
 
 const isNone = (v) => /^none\b/i.test(v);
 
-// insideRoot is true when path is root or a folder below it (case-insensitive
-// on Windows, where the file system is).
+// A Windows path with its own drive or UNC name: C:\po, D:/po, \\host\share or
+// //host/share, with either separator.
+const WINDOWS_ABSOLUTE = /^(?:[A-Za-z]:[\\/]|[\\/]{2})/;
+
+// insideRoot is true when path is root or a folder below it. A Windows root
+// is compared with Windows rules (case-insensitive, \ or / between segments)
+// and any other root with POSIX rules, whatever system the check runs on, so
+// the answer is the same on every host and never depends on the working
+// directory. On a Windows root, a path with a drive or UNC name is read as it
+// is, and one that starts with a single separator (\po, /po) is on the root's
+// own drive, where Windows puts it for a check run from the repository. Any
+// other path is of the other system, or relative, and is never inside.
 export function insideRoot(root, path) {
-  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
-  const rel = relative(fold(resolve(root)), fold(resolve(path)));
+  const windows = WINDOWS_ABSOLUTE.test(root);
+  let absolute = path;
+  if (windows && !WINDOWS_ABSOLUTE.test(path)) {
+    if (!/^[\\/]/.test(path)) return false;
+    absolute = win32.parse(root).root.replace(/[\\/]+$/, '') + path;
+  } else if (!windows && !path.startsWith('/')) {
+    return false;
+  }
+  const api = windows ? win32 : posix;
+  const fold = (p) => (windows ? p.toLowerCase() : p);
+  const rel = api.relative(fold(api.resolve(root)), fold(api.resolve(absolute)));
   // A name such as ..state is inside; only a .. segment leaves root.
-  return rel === '' || (rel !== '..' && !/^\.\.[\\/]/.test(rel) && !isAbsolute(rel));
+  return rel === '' || (rel !== '..' && !/^\.\.[\\/]/.test(rel) && !api.isAbsolute(rel));
 }
 
 // findRoot returns the nearest folder at or above dir that holds a .git
@@ -291,7 +328,7 @@ export function checkConfig(text, { root } = {}) {
       else scoped.set(label, i + 1);
       // The audit reads these paths from a snapshot of the repository, so
       // each must stay inside it.
-      if (scopePaths(paths).some(outsidePath)) {
+      if (scopePaths(paths).some((word) => outsidePath(word, { urls: true }))) {
         errors.push(`${entry}: paths must be relative to the repository, without .. (no absolute, drive-letter, home or environment-variable paths)`);
       }
     });

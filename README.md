@@ -44,7 +44,9 @@ committed file, `docs/product-owner-config.md`.
 - Optional reviewers. The skills run whatever your config lists in
   `local_reviews`; without any, sessions use a fresh-context subagent
   review. The [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc)
-  and its CLI work well as one of them (agents run `codex review --base origin/<branch>`).
+  and its CLI work well as one of them (agents run
+  `codex review -c model_reasoning_effort=<level> --base origin/<branch>`, with the level
+  from `subagent_effort`).
 
 ## Install
 
@@ -167,14 +169,18 @@ Adjust it if your integration branch uses another merge method.
   that wakes it every 30 minutes when it has gone quiet (after an app
   restart, a crash or a usage-limit stop) and points it at its check-in
   file in `po_check_in_dir`. A run only wakes the PO and archives itself.
-  The app asks the owner to approve the task; the PO asks once per machine.
-  Turn it off with `po_watchdog: off`.
+  The app asks the owner to approve the task; the PO asks once per machine,
+  and may re-enable its own approved watchdog in any turn. The task id starts
+  with the repository owner, so a fork and its upstream on one machine each
+  get their own. Turn it off with `po_watchdog: off`.
 - **Sub-session model and effort (optional).** `agent_model` and
   `agent_effort` set the model and effort the PO passes to `start_session`
   for each sub-session, and `subagent_effort` the effort of their subagents
   and reviews (default: `agent_effort`). Left out, a sub-session inherits the
   PO's own. When a setting changes, the PO moves a running sub-session with
-  `set_session_model` and `set_session_effort`.
+  `set_session_model` and `set_session_effort`. A Codex review gets its level
+  on the command line (`-c model_reasoning_effort=<level>`), so it does not
+  depend on the machine's `~/.codex/config.toml`.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,
@@ -205,6 +211,23 @@ change; the release notes say which keys.
 - `agent_effort` now covers the sub-session only. Set `subagent_effort` for
   the level of its subagents and reviews (default: `agent_effort`).
 - The new optional `agent_model` sets the sub-session's model.
+
+### Upgrading to 2.1.0
+
+No config change is needed.
+
+- A Codex review runs at `subagent_effort`: sessions pass the level as
+  `codex review -c model_reasoning_effort=<level> --base <branch>`. If your
+  `local_reviews` writes the Codex command, add the same `-c` option.
+- `check-config.mjs` rejects an absolute, drive-letter, home or
+  environment-variable path after a key or note prefix in `line_scopes`
+  (`path=/etc`, `dir=C:\x`), and reads `po_check_in_dir` by the rules of its own
+  system on every host (a Windows path checked on Linux is no longer read as
+  relative to the working directory).
+- A new watchdog's task id and check-in file name start with the repository
+  owner (`<repo owner>-<repo>-<slug>-po-watchdog`). A watchdog you already
+  have keeps its id.
+- A PO re-enables its own existing, owner-approved watchdog in any turn.
 
 ## License
 

@@ -134,7 +134,7 @@ read the config.
 
 - **Check-in file.** The PO keeps its checklist and live state in one file
   outside the repository. It is the file its watchdog's wake message names,
-  when the PO has a watchdog; otherwise `<repo>-<slug>-po-checkin.md` in
+  when the PO has a watchdog; otherwise `<repo owner>-<repo>-<slug>-po-checkin.md` in
   `po_check_in_dir` (the template's "Check-in file" section has its start
   and the naming). Both triggers run it: the in-session check-in cron's
   prompt and the watchdog's wake message point at the same file. The PO
@@ -147,8 +147,12 @@ read the config.
   check-in, the PO looks for its watchdog with `list_scheduled_tasks`: the
   task id its check-in file records, else the template's task id, else any
   task whose id ends in `-po-watchdog` and whose prompt (read from its
-  `path`) names the line's PO title in this repository. Its own session id
-  comes from `get_session` with `self`.
+  `path`) names the line's PO title and this repository's `<owner/repo>`.
+  The last lookup also finds a watchdog made before the repository owner was
+  part of the template's id, or by hand; the PO keeps it, whatever its id,
+  instead of creating a second, and never takes one whose prompt names
+  another repository (an upstream's, when this is its fork). Its own session
+  id comes from `get_session` with `self`.
   - Found, enabled, and its prompt names the PO's own session id: nothing to
     do, except that the check-in file is the one the prompt names (above).
   - Found but naming an earlier session id of this line's PO (an archived or
@@ -158,7 +162,7 @@ read the config.
     the PO changes nothing, asks the owner once which one stays, and
     records the question in its check-in file so it does not ask again.
   - Found but disabled while the line has work in flight: the PO enables it
-    (`enabled: true`).
+    (`enabled: true`), in any turn ("Owner turns").
   - Missing: the PO creates it from the template with
     `create_scheduled_task` (the template's task id, title, description,
     offset schedule and prompt, with its values filled in) and records the
@@ -176,10 +180,15 @@ read the config.
   or the owner's approval quoted in the config (on `po_watchdog` or in
   `decision_log`), does not ask again; one that finds a no does not create
   a watchdog unless the owner raises it again.
-- **Owner turns.** Creating, retargeting or enabling a watchdog, and the
-  questions above, happen in a turn the owner typed, where the owner can
-  answer the app's prompt. In a check-in turn the PO only notes in its
-  digest what the watchdog needs, and does it at the owner's next turn.
+- **Owner turns.** Creating or retargeting a watchdog, enabling one the owner
+  has not approved, and the questions above, happen in a turn the owner
+  typed, where the owner can answer the app's prompt. In a check-in turn
+  the PO only notes in its digest what the watchdog needs, and does it at
+  the owner's next turn. Re-enabling the PO's own existing watchdog is not a
+  new approval: where the approval above is on record, the PO does it in any
+  turn, such as a sub-session's message, a CI event or another PO's request,
+  and notes it in its next report. If the app still refuses the call in that
+  turn, the PO notes it in its digest and does it at the owner's next turn.
 - **Only a wake.** The watchdog's prompt reads one session, sends one
   message and archives its own run, as the template's does (a hand-made one
   that the PO keeps must do no more). It never touches the repository,
@@ -202,7 +211,8 @@ read the config.
 - **Quiet line.** When the line has no authorized work left and the PO
   stops its check-ins, it disables the watchdog with
   `update_scheduled_task` (`enabled: false`) and enables it again when work
-  resumes, so an idle PO is not woken every 30 minutes for nothing. When the
+  resumes, in whatever turn the work resumes ("Owner turns"), so an idle PO
+  is not woken every 30 minutes for nothing. When the
   owner ends the line's PO session, the PO disables its watchdog the same
   way where it still can; otherwise the watchdog keeps finding the session
   archived and does nothing until the line's next PO retargets it.
@@ -684,8 +694,13 @@ with `set_session_model` and `set_session_effort`, which the PO does itself
 and only for a setting that has a value. The subagents a session starts and
 its reviews run at `subagent_effort`, which is `agent_effort` unless the
 config sets it apart (`none` counts as absent), and the brief says which
-level that is. The brief is the only context the session gets, so it
-carries:
+level that is. A Codex review reads its effort from the machine's
+`~/.codex/config.toml`, not from the brief, so the session passes the level
+on the command line: `codex review -c model_reasoning_effort=<level> --base
+<branch>` (if Codex rejects the level, the session uses the highest one it
+accepts and says so in the PR description). With no level set anywhere, the
+review keeps the machine's own default. The brief is the only context the
+session gets, so it carries:
 
 - **Task**: the issue link, the problem in a few lines, and the acceptance
   from the issue.
@@ -699,7 +714,8 @@ carries:
 - **Process**: claim with `task-claim` before editing; create and fill any
   new issue per the table above; a PR with `Refs #<n>` into
   `integration_branch` (a draft first when `draft_pr_first` is yes); the
-  review gate: the `local_reviews`, run by the agent with their CLI form,
+  review gate: the `local_reviews`, run by the agent with their CLI form
+  (a Codex review at the level the brief names, as above),
   in the background when a review takes minutes (a slash command such as a
   review plugin's is typed by a person; an agent cannot invoke it), naming the tool-unavailable path for any reviewer that
   is missing; the `required_checks`; resolved threads; the PO's acceptance

@@ -15,14 +15,14 @@ prompt: each run fills those in itself.
 
 | Placeholder | Value |
 | --- | --- |
-| `<task id>` | `<repo>-<slug>-po-watchdog`, lower case, every run of characters other than `a-z` and `0-9` as one hyphen, no hyphen at either end of `<repo>` or `<slug>`. `<repo>` is the repository name without its owner; `<slug>` is the line's label after `line:`. |
+| `<task id>` | `<repo owner>-<repo>-<slug>-po-watchdog`, lower case, every run of characters other than `a-z` and `0-9` as one hyphen, no hyphen at either end of `<repo owner>`, `<repo>` or `<slug>`. `<repo owner>` and `<repo>` are the two halves of `<owner/repo>`, so an upstream and its fork (or two repositories with one name) on one machine each get their own task; `<slug>` is the line's label after `line:`. |
 | `<po session id>` | The PO's own app session id (`local_...`), from `get_session` with `self`. |
 | `<po title>` | The PO session's title, `<Line> Product Owner`. |
 | `<owner/repo>` | The repository, for people reading the task list. |
 | `<owner>` | `owner_name`. |
 | `<language>` | `report_language`. |
 | `<idle minutes>` | `check_in_minutes` plus 10 (40 with the default). |
-| `<check-in file>` | The absolute path of the PO's check-in file: the one it already keeps, else `po_check_in_dir` with `~` expanded, then `<repo>-<slug>-po-checkin.md`, written as `<task id>` is. |
+| `<check-in file>` | The absolute path of the PO's check-in file: the one it already keeps, else `po_check_in_dir` with `~` expanded, then `<repo owner>-<repo>-<slug>-po-checkin.md`, written as `<task id>` is. |
 
 Create the task with `create_scheduled_task`:
 

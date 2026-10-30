@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkConfig, findRoot, insideRoot, parseConfig, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
+import { checkConfig, findRoot, insideRoot, outsidePath, parseConfig, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
@@ -195,14 +195,32 @@ test('sprint review keys are checked', () => {
   assert.match(err(review('- line_scopes: line:core src; line:core lib')), /line_scopes entry 2: same label as entry 1/);
   for (const outside of ['`~/.ssh`', '`../other-repo`', '/etc', '`C:\\Users\\me`', 'c:/r', '`src`, `$HOME/.aws`', '`%USERPROFILE%`',
     '`src/../../x`', 'src (and `..\\up`)', '`\\\\host\\share`', '<../x>', '{..}', 'path=../x', 'file:///etc/passwd',
-    '`src/$HOME`', '`src/%USERPROFILE%`', 'dir=~/x']) {
+    '`src/$HOME`', '`src/%USERPROFILE%`', 'dir=~/x',
+    'path=/etc', 'dir=C:\\x', 'root=~/.ssh', 'dir=$HOME/.aws', 'see:/etc', 'note:C:\\Users', '`path=/etc`', 'path=`/etc`',
+    'x="/etc"', 'root=(C:\\Users)', 'path:../x', 'key=C:rel', 'path=//host/share', 'path=\\\\host\\share', 'where=file:///etc/passwd',
+    // A URL in the middle of a path hides nothing: it is a folder named https: followed by ..
+    'a/https://../../../etc', 'docs/ssh://../../../../x', 'src/http://x/../../..', 'key=a/https://../..',
+    'a:https://../../../etc', 'url=https://example.com/../../x', 'see:https://example.com/a/../b',
+    'src/core ([x](https://example.com/../../etc))', 'src/core ([x](file:///etc/passwd))', 'src/core ([x](a/https://../../etc))']) {
     const text = review(`- line_scopes: \`line:core\`: ${outside}`);
     assert.match(err(text), /line_scopes entry 1: paths must be relative to the repository/, outside);
     assert.doesNotMatch(err(text), /\.ssh|other-repo|etc|Users|aws|USERPROFILE|share/, 'no message repeats a path');
   }
-  for (const inside of ['`apps/*`, `.github/workflows/deploy-*.yml`', 'behavior and data of `apps/web` (D-003)', '`tools/a..b`, `docs/x...`', '`apps/web` (pages at https://example.com/docs)']) {
+  for (const inside of ['`apps/*`, `.github/workflows/deploy-*.yml`', 'behavior and data of `apps/web` (D-003)', '`tools/a..b`, `docs/x...`', '`apps/web` (pages at https://example.com/docs)',
+    '`apps/web/**`, `docs/guides/ui.md`', 'path=apps/web, dir=`docs/guides`', 'ratio=1:2 (see http://localhost:3000/a)',
+    'see:https://example.com/a/b', 'url=`https://example.com/x`, (https://example.com/y)',
+    // The target of a Markdown link is a URL, not a path.
+    'src/core (see [architecture](https://example.com/guide))', '`apps/web` ([guide](https://example.com/a/b), [faq](http://localhost:3000/faq))']) {
     assert.deepEqual(err(review(`- line_scopes: \`line:core\`: ${inside}`)), '', inside);
   }
+  // A URL is a note, not a path: only a note's words may hold one, never a path to write.
+  assert.equal(outsidePath('url=https://example.com/x;path=/etc', { urls: true }), true);
+  assert.equal(outsidePath('url=https://example.com/x', { urls: true }), false);
+  assert.equal(outsidePath('https://example.com/x'), true);
+  assert.equal(outsidePath('https://example.com/../../x'), true);
+  assert.equal(outsidePath('a/https://../../../etc', { urls: true }), true);
+  assert.equal(outsidePath('file:///etc/passwd', { urls: true }), true);
+  assert.equal(outsidePath('docs/<YYYY-MM-DD>-<line>.md'), false);
   assert.deepEqual(scopePaths('`src/core`, `cmd/` (not docs); "x"'), ['src/core', 'cmd/', 'not', 'docs', 'x']);
   const unscoped = checkConfig(review(`${sprint}\n- sprint_review: on`));
   assert.deepEqual(unscoped.errors, []);
@@ -229,6 +247,87 @@ test('watchdog keys are checked', () => {
     assert.equal(err(`- po_check_in_dir: ${outside}`, { root }), '', outside);
   }
   assert.equal(insideRoot(root, join(root, '..', 'other')), false);
+});
+
+// A path is read by its own system's rules wherever the check runs, and
+// never against the working directory: a Windows path checked on
+// Linux used to resolve under the checkout and be refused as inside it.
+test('po_check_in_dir containment follows the path\'s own system on every host', () => {
+  const windowsRoot = 'C:\\Projects\\repo';
+  const posixRoot = '/home/sam/repo';
+  for (const [root, path, inside] of [
+    [windowsRoot, 'C:\\Users\\sam\\po', false],
+    [windowsRoot, 'D:\\po', false],
+    [windowsRoot, 'C:\\Projects\\repo', true],
+    [windowsRoot, 'C:\\Projects\\repo\\.claude\\po-state', true],
+    [windowsRoot, 'c:/projects/REPO/state', true],
+    [windowsRoot, 'C:\\Projects\\repo-state', false],
+    [windowsRoot, 'C:\\Projects\\repo\\..\\other', false],
+    [windowsRoot, 'C:\\Projects\\repo\\..state', true],
+    [windowsRoot, '\\\\host\\share\\po', false],
+    [windowsRoot, '/home/sam/po', false],
+    // Without a drive, Windows puts a rooted path on the root's own drive.
+    [windowsRoot, '\\Projects\\repo\\po-state', true],
+    [windowsRoot, '/Projects/repo/po-state', true],
+    [windowsRoot, '\\Projects\\REPO', true],
+    [windowsRoot, '\\Projects\\repo-state', false],
+    [windowsRoot, '\\Users\\sam\\po', false],
+    [windowsRoot, 'Projects\\repo\\po-state', false],
+    [windowsRoot, '//host/share/po', false],
+    ['\\\\host\\share\\repo', '//host/share/repo/po-state', true],
+    ['\\\\host\\share\\repo', '\\repo\\po-state', true],
+    ['\\\\host\\share\\repo', '\\\\host\\share\\other', false],
+    ['\\\\host\\share\\repo', 'C:\\repo', false],
+    // A UNC root written with / is Windows too.
+    ['//host/share/repo', '\\\\host\\share\\repo\\po-state', true],
+    ['//host/share/repo', '//HOST/share/repo/po-state', true],
+    ['//host/share/repo', '\\\\host\\share\\other', false],
+    ['//host/share/repo', '\\repo\\po-state', true],
+    [posixRoot, 'C:\\Users\\sam\\po', false],
+    [posixRoot, '\\home\\sam\\repo\\po-state', false],
+    [posixRoot, 'home/sam/repo/po-state', false],
+    [posixRoot, 'C:\\Users\\sam\\repo', false],
+    [posixRoot, '\\\\host\\share\\po', false],
+    [posixRoot, '/home/sam/repo', true],
+    [posixRoot, '/home/sam/repo/.claude/po-state', true],
+    [posixRoot, '/home/sam/Repo/state', false],
+    [posixRoot, '/home/sam/repo/../other', false],
+    [posixRoot, '/home/sam/repo-state', false],
+  ]) {
+    assert.equal(insideRoot(root, path), inside, `${root} ${path}`);
+  }
+  // Through checkConfig too: a Windows or a POSIX folder outside the repository is fine, wherever the root is.
+  const checked = (root, dir) => checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- po_check_in_dir: ${dir}`), { root }).errors;
+  for (const [root, dir] of [[posixRoot, 'C:\\Users\\sam\\po'], [windowsRoot, 'C:\\Users\\sam\\po'], [windowsRoot, '/home/sam/po']]) {
+    assert.deepEqual(checked(root, dir), [], `${root} ${dir}`);
+  }
+  // A Windows path with no drive, or with / in a UNC name, still lands inside the repository.
+  for (const [root, dir] of [[windowsRoot, '\\Projects\\repo\\po-state'], ['\\\\host\\share\\repo', '//host/share/repo/po-state'],
+    ['//host/share/repo', '\\\\host\\share\\repo\\po-state']]) {
+    assert.match(checked(root, dir).join('\n'), /po_check_in_dir is inside the repository/, `${root} ${dir}`);
+  }
+});
+
+test('the check run from inside a checkout does not read a Windows path under it', () => {
+  const top = mkdtempSync(join(tmpdir(), 'po-cwd-'));
+  try {
+    const checkout = join(top, 'repo');
+    mkdirSync(join(checkout, 'docs'), { recursive: true });
+    writeFileSync(join(checkout, '.git'), 'gitdir: elsewhere\n');
+    const file = join(checkout, 'docs', 'product-owner-config.md');
+    writeFileSync(file, minimal.replace('- project_id: PVT_example', '- project_id: PVT_example\n- po_check_in_dir: C:\\Users\\sam\\po'));
+    const script = join(root, 'plugins/cc-po/skills/product-owner/check-config.mjs');
+    for (const cwd of [checkout, join(checkout, 'docs'), top]) {
+      const run = spawnSync(process.execPath, [script, file], { cwd, encoding: 'utf8' });
+      assert.equal(run.status, 0, `${cwd}: ${run.stderr}`);
+    }
+    writeFileSync(file, minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- po_check_in_dir: ${join(checkout, 'po-state')}`));
+    const run = spawnSync(process.execPath, [script, file], { cwd: top, encoding: 'utf8' });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /po_check_in_dir is inside the repository/);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
 });
 
 test('sub-session model and effort keys are optional and checked', () => {
@@ -288,6 +387,29 @@ test('the watchdog template is wake-only', () => {
   }
 });
 
+// An upstream and its fork (or two repositories with one name) on one machine
+// must not derive the same task id or check-in file, while an id made
+// before the owner joined it is still found and kept.
+test('the watchdog task id and check-in file name carry the repository owner', () => {
+  const dir = join(root, 'plugins/cc-po/skills/product-owner');
+  const template = readFileSync(join(dir, 'watchdog-template.md'), 'utf8').replace(/\r\n/g, '\n');
+  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n');
+  const row = template.split('\n').find((line) => line.startsWith('| `<task id>`'));
+  assert.ok(row, 'the Values table has a <task id> row');
+  assert.match(row, /`<repo owner>-<repo>-<slug>-po-watchdog`/);
+  assert.match(row, /no hyphen at either end of `<repo owner>`, `<repo>` or `<slug>`/);
+  assert.match(row, /`<repo owner>` and `<repo>` are the two halves of `<owner\/repo>`/);
+  assert.match(template, /`<repo owner>-<repo>-<slug>-po-checkin\.md`/);
+  assert.match(skill, /`<repo owner>-<repo>-<slug>-po-checkin\.md`/);
+  // No id or file name is built from the repository name alone.
+  for (const [name, text] of [['watchdog-template.md', template], ['SKILL.md', skill]]) {
+    assert.doesNotMatch(text.replace(/<repo owner>-<repo>-<slug>/g, ''), /<repo>-<slug>/, name);
+  }
+  // The lookup of existing watchdogs by suffix and prompt stays.
+  assert.match(skill.replace(/\n\s*/g, ' '), /whose id ends in `-po-watchdog` and whose prompt \(read from its `path`\) names the line's PO title and this repository's `<owner\/repo>`/);
+  assert.match(skill.replace(/\n\s*/g, ' '), /made before the repository owner was part of the template's id/);
+});
+
 // The checker finds the repository root without running git, whose lookup
 // could pick a git program planted in the checkout.
 test('the repository root is found by its .git entry', () => {
@@ -301,4 +423,16 @@ test('the repository root is found by its .git entry', () => {
     rmSync(top, { recursive: true, force: true });
   }
   assert.doesNotMatch(read('plugins/cc-po/skills/product-owner/check-config.mjs'), /child_process/);
+});
+
+// A Codex review reads its effort from ~/.codex/config.toml unless the command
+// line sets it, so the skill and the sample config both carry the per-run
+// override, and a PO may re-enable its approved watchdog in any turn.
+test('a Codex review is run at subagent_effort and an approved watchdog is re-enabled in any turn', () => {
+  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  assert.match(skill, /codex review -c model_reasoning_effort=<level> --base <branch>/);
+  assert.match(skill, /Re-enabling the PO's own existing watchdog is not a new approval: where the approval above is on record, the PO does it in any turn/);
+  assert.match(skill, /Creating or retargeting a watchdog, enabling one the owner has not approved/);
+  const { values } = parseConfig(read('plugins/cc-po/skills/setup/sample-config.md'));
+  assert.match(values.local_reviews, /codex review -c model_reasoning_effort=<subagent_effort> --base origin\/main/);
 });
