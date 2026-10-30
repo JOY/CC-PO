@@ -1,5 +1,6 @@
 // Run with: node --test
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -228,6 +229,47 @@ test('watchdog keys are checked', () => {
     assert.equal(err(`- po_check_in_dir: ${outside}`, { root }), '', outside);
   }
   assert.equal(insideRoot(root, join(root, '..', 'other')), false);
+});
+
+test('sub-session model and effort keys are optional and checked', () => {
+  const check = (extra) => checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${extra}`));
+  const clean = { errors: [], warnings: [] };
+  // Absent keys are the defaults, so a config without them reports nothing.
+  assert.deepEqual(checkConfig(minimal), clean);
+  assert.deepEqual(check('- agent_model: claude-sonnet-5-5\n- agent_effort: xhigh\n- subagent_effort: high'), clean);
+  const { values } = parseConfig(minimal.replace('- project_id: PVT_example', '- project_id: PVT_example\n- agent_model: claude-sonnet-5-5\n- subagent_effort: high'));
+  assert.equal(values.agent_model, 'claude-sonnet-5-5');
+  assert.equal(values.subagent_effort, 'high');
+  // A note may follow an effort level, and none leaves the key unset.
+  for (const ok of ['- agent_effort: low', '- agent_effort: xhigh (owner, 2026-10-31)', '- agent_effort: `max`', '- subagent_effort: none', '- agent_model: sonnet']) {
+    assert.deepEqual(check(ok), clean, ok);
+  }
+  // Only an effort has a fixed set of values, and start_session fails on any
+  // other, so prose or a near miss is an error; a model id is the runtime's to judge.
+  for (const bad of ['as the review rules set it', 'very high', 'higher', 'extra-high', 'yes']) {
+    for (const key of ['agent_effort', 'subagent_effort']) {
+      const { errors, warnings } = check(`- ${key}: ${bad}`);
+      assert.match(errors.join('\n'), new RegExp(`${key} must start with low, medium, high, xhigh or max`), `${key}: ${bad}`);
+      assert.deepEqual(warnings, [], `${key}: ${bad}`);
+    }
+  }
+  assert.match(check('- agent_model:').errors.join('\n'), /agent_model has no value/);
+});
+
+test('a prose effort makes the checker exit non-zero', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'po-effort-'));
+  try {
+    const file = join(dir, 'product-owner-config.md');
+    const checker = join(root, 'plugins/cc-po/skills/product-owner/check-config.mjs');
+    writeFileSync(file, minimal.replace('- project_id: PVT_example', '- project_id: PVT_example\n- agent_effort: as the review rules set it'));
+    const run = spawnSync(process.execPath, [checker, file], { encoding: 'utf8' });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /agent_effort must start with low, medium, high, xhigh or max/);
+    writeFileSync(file, minimal.replace('- project_id: PVT_example', '- project_id: PVT_example\n- agent_effort: xhigh (owner, 2026-10-31)'));
+    assert.equal(spawnSync(process.execPath, [checker, file], { encoding: 'utf8' }).status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // The watchdog only wakes its PO: its prompt reads one session, messages it

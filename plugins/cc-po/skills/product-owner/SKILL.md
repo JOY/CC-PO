@@ -497,7 +497,7 @@ finds and files; it never fixes.
   so and proposes a scope, which lands through a config PR. The PO splits
   the scope into a few areas (about one per app, service or module) and
   runs one in-process subagent per area with the Agent tool, in parallel,
-  at `agent_effort`; this also works in a turn where the app refuses
+  at `subagent_effort`; this also works in a turn where the app refuses
   `start_session`, such as a check-in. The audit reads one revision: the
   PO pins the head SHA of `integration_branch`, in a fresh clone of its
   own isolated as "Production and secret steps" step 2 sets one up (never
@@ -675,10 +675,17 @@ itself whether to use in-process subagents (for example parallel research or
 the fresh-context review a gate requires); the PO does not require or
 forbid them, and they work under that session's claim.
 
-Use `start_session` with a fresh context, its own worktree and the effort
-`agent_effort` names; that level also applies to the subagents a session
-starts and to its reviews. The brief is the only context the session gets,
-so it carries:
+Use `start_session` with a fresh context, its own worktree, `model:
+<agent_model>` and `effort: <agent_effort>`; a setting the config leaves
+out, or sets to `none`, is left out of the call (`none` is the same as an
+absent key), so the session inherits the PO's. A sub-session already running
+on another model or effort (started before the setting changed) is moved
+with `set_session_model` and `set_session_effort`, which the PO does itself
+and only for a setting that has a value. The subagents a session starts and
+its reviews run at `subagent_effort`, which is `agent_effort` unless the
+config sets it apart (`none` counts as absent), and the brief says which
+level that is. The brief is the only context the session gets, so it
+carries:
 
 - **Task**: the issue link, the problem in a few lines, and the acceptance
   from the issue.

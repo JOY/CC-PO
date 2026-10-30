@@ -108,7 +108,9 @@ repository has not defined them.
 | `external_review_app` | `none` | The review app whose approval a Production runbook PR needs on its final head, with its app id. |
 | `local_reviews` | a fresh-context subagent review | Reviews run before opening a PR, as commands an agent runs, with the repository's exemptions. A review a person types as a slash command has a CLI form for agents. |
 | `promotion_reviews` | `local_reviews` against `production_branch` | Reviews run on a promotion branch before its PR. |
-| `agent_effort` | the runtime's default | Effort for sub-sessions, their subagents and their reviews. |
+| `agent_model` | the runtime's default | Model for sub-sessions, as the model id the PO passes to `start_session` (and `set_session_model` for a running one), not higher than the PO's own model, so the PO session runs on that model or a more capable one. Absent or `none`: a sub-session inherits the PO's model. |
+| `agent_effort` | the runtime's default | Effort for sub-sessions, one of `low`, `medium`, `high`, `xhigh`, `max`, passed to `start_session` (and `set_session_effort` for a running one); the app takes an effort at or below the PO's own, so the PO session runs at least that high. It covers the sub-session itself, not its subagents or its reviews (see `subagent_effort`). Absent or `none`: a sub-session inherits the PO's effort. Any other value than a level (after which a note may follow) is a config error. |
+| `subagent_effort` | `agent_effort` | Effort for in-process subagents (the Agent tool: a sub-session's, and the PO's own, such as the sprint review's audit subagents) and for the reviews a sub-session runs. Absent or `none`: the same level as `agent_effort`. The same levels as `agent_effort` apply; any other value is a config error. |
 
 ## Sessions
 

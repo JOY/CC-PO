@@ -88,8 +88,11 @@ skipping anything the arguments or step 1 settled:
 4. **Production**: whether a separate branch ships to Production
    (`production_branch`), or the integration branch ships.
 
-Everything else takes its schema default unless the user names it. Mention
-the defaults you used in the summary so the user can change them.
+Everything else takes its schema default unless the user names it. That
+includes the sub-sessions' model and effort (`agent_model`, `agent_effort`,
+`subagent_effort`): left out, a sub-session runs on the PO's own model and
+effort. Mention the defaults you used in the summary so the user can change
+them.
 
 ### 3. Read the board
 

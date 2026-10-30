@@ -24,7 +24,7 @@ export const KNOWN = new Set([
   'production_branch', 'production_merge', 'production_effect', 'promotion_notes',
   'test_environment', 'done_definition',
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
-  'promotion_reviews', 'agent_effort',
+  'promotion_reviews', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
   'po_watchdog', 'po_check_in_dir',
   'sprint_review', 'line_scopes', 'sprint_review_report',
@@ -231,6 +231,15 @@ export function checkConfig(text, { root } = {}) {
   }
   if (values.po_watchdog !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_watchdog)) {
     errors.push('po_watchdog must be on or off');
+  }
+  // The PO passes an effort to start_session, which takes one of a fixed set
+  // of levels, so another value would fail every dispatch; a note may follow
+  // the level ("xhigh (owner, 2026-10-31)").
+  for (const key of ['agent_effort', 'subagent_effort']) {
+    const v = values[key];
+    if (v !== undefined && !isNone(v) && !/^(low|medium|high|xhigh|max)(?![\w-])/i.test(v)) {
+      errors.push(`${key} must start with low, medium, high, xhigh or max (or be none): a PO cannot pass another value as an effort`);
+    }
   }
   // The check-in file is machine state, never committed, so its folder must
   // be outside the repository: absolute, a drive letter or home (~), and not

@@ -169,6 +169,12 @@ Adjust it if your integration branch uses another merge method.
   file in `po_check_in_dir`. A run only wakes the PO and archives itself.
   The app asks the owner to approve the task; the PO asks once per machine.
   Turn it off with `po_watchdog: off`.
+- **Sub-session model and effort (optional).** `agent_model` and
+  `agent_effort` set the model and effort the PO passes to `start_session`
+  for each sub-session, and `subagent_effort` the effort of their subagents
+  and reviews (default: `agent_effort`). Left out, a sub-session inherits the
+  PO's own. When a setting changes, the PO moves a running sub-session with
+  `set_session_model` and `set_session_effort`.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,
@@ -187,6 +193,18 @@ claude plugin update cc-po@cc-po --scope project
 
 New sessions load the new version. A major version means your config needs a
 change; the release notes say which keys.
+
+### Upgrading to 2.0.0
+
+- `agent_effort` and `subagent_effort` must be one of `low`, `medium`,
+  `high`, `xhigh`, `max` or `none` (a note may follow a level, as in
+  `xhigh (owner, 2026-10-31)`). A value in prose, such as
+  `as the review rules set it`, now fails `check-config.mjs`: replace it with
+  a level, or remove the key so a sub-session inherits the PO's effort. Run
+  the checker before you update.
+- `agent_effort` now covers the sub-session only. Set `subagent_effort` for
+  the level of its subagents and reviews (default: `agent_effort`).
+- The new optional `agent_model` sets the sub-session's model.
 
 ## License
 
