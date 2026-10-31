@@ -181,6 +181,10 @@ Adjust it if your integration branch uses another merge method.
   `set_session_model` and `set_session_effort`. A Codex review gets its level
   on the command line (`-c model_reasoning_effort=<level>`), so it does not
   depend on the machine's `~/.codex/config.toml`.
+  A session the PO starts above `agent_effort` for one hard task (an exception
+  your `agent_effort` note allows) is recorded as `Effort exception: <level>,
+  <reason>` in its brief and in the PO's handoff file, and the PO's effort
+  reconciliation leaves it at that level, also after a PO handoff.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,
@@ -228,6 +232,16 @@ No config change is needed.
   owner (`<repo owner>-<repo>-<slug>-po-watchdog`). A watchdog you already
   have keeps its id.
 - A PO re-enables its own existing, owner-approved watchdog in any turn.
+
+### Upgrading to 2.2.0
+
+No config change is needed.
+
+- A per-task effort exception survives reconciliation: when the `agent_effort`
+  note in your config allows a higher level for one kind of hard task, the PO
+  records `Effort exception: <level>, <reason>` in that sub-session's brief and
+  on its line of `<po_check_in_dir>/<line>-po-handoff.md`, and moves a running
+  sub-session to `agent_effort` only when neither record names an exception.
 
 ## License
 

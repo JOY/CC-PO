@@ -436,3 +436,12 @@ test('a Codex review is run at subagent_effort and an approved watchdog is re-en
   const { values } = parseConfig(read('plugins/cc-po/skills/setup/sample-config.md'));
   assert.match(values.local_reviews, /codex review -c model_reasoning_effort=<subagent_effort> --base origin\/main/);
 });
+
+// A deliberate per-task effort exception must not be reset to agent_effort by the
+// reconciliation of a running sub-session, including after a PO handoff.
+test('a recorded per-task effort exception survives effort reconciliation', () => {
+  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  assert.match(skill, /the brief carries an `Effort exception:` line \(level, reason\)/);
+  assert.match(skill, /never moves a session whose brief or handoff-file line records that exception to `agent_effort`/);
+  assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /`Effort exception: <level>, <reason>`/);
+});

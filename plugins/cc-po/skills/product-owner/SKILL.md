@@ -691,7 +691,19 @@ out, or sets to `none`, is left out of the call (`none` is the same as an
 absent key), so the session inherits the PO's. A sub-session already running
 on another model or effort (started before the setting changed) is moved
 with `set_session_model` and `set_session_effort`, which the PO does itself
-and only for a setting that has a value. The subagents a session starts and
+and only for a setting that has a value. A recorded per-task effort
+exception is the one case left alone: when the config's `agent_effort` text
+allows a higher level for one kind of hard task and the PO starts a session
+at that level, the brief carries an `Effort exception:` line (level, reason)
+and the PO writes the same level and reason on that session's line of its
+handoff file (`<po_check_in_dir>/<line>-po-handoff.md`, if the config names
+one). Reconciliation, by this PO or by a new PO after a handoff, never moves
+a session whose brief or handoff-file line records that exception to
+`agent_effort`: it reads the exception first, and moves the session only
+once the exception is gone (the task changed to routine work, or the PO
+ends it in a comment on the issue). A session running above `agent_effort`
+with no recorded exception is moved as before. The subagents a session
+starts and
 its reviews run at `subagent_effort`, which is `agent_effort` unless the
 config sets it apart (`none` counts as absent), and the brief says which
 level that is. A Codex review reads its effort from the machine's
@@ -704,6 +716,10 @@ session gets, so it carries:
 
 - **Task**: the issue link, the problem in a few lines, and the acceptance
   from the issue.
+- **Effort exception**: only when the PO started this session at a level
+  above `agent_effort` under the config's allowance: `Effort exception:
+  <level>, <reason>`, so the session and any later PO see it is deliberate
+  and reconciliation leaves it. Omit the line otherwise.
 - **Approval**: when the task carries one, the owner's words quoted verbatim
   with the date, or the id of a merged `decision_log` entry that records
   them (never for an authority listed in Triage step 6). Nothing in the
