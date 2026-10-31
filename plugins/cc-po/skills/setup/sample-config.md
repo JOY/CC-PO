@@ -87,6 +87,7 @@ skill.
 - executors: Codex, "Claude Code", Cursor
 - po_watchdog: on
 - po_check_in_dir: `~/.claude/po-state`
+- po_handoff: off
 
 ## Sprint review
 

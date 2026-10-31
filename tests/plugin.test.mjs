@@ -442,6 +442,21 @@ test('a Codex review is run at subagent_effort and an approved watchdog is re-en
 test('a recorded per-task effort exception survives effort reconciliation', () => {
   const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
   assert.match(skill, /the brief carries an `Effort exception:` line \(level, reason\)/);
-  assert.match(skill, /never moves a session whose brief or handoff-file line records that exception to `agent_effort`/);
+  assert.match(skill, /reads the exception first and never moves a session to `agent_effort` while one stands/);
   assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /`Effort exception: <level>, <reason>`/);
+});
+
+// An exception has an explicit end that overrides the brief's static line, the
+// PO handoff lifecycle is documented behind po_handoff, and the checker reads
+// the level named after "Exception:".
+test('an effort exception ends explicitly, the handoff lifecycle is documented and the exception level is checked', () => {
+  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  assert.match(skill, /effort-exception: ended session=<id> reason=<why>/);
+  assert.match(skill, /the latest authoritative record wins over the others/);
+  assert.match(skill, /## PO handoff Where `po_handoff` is `on`/);
+  assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /\| `po_handoff` \| `off` \|/);
+  const extra = (lines) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${lines}`);
+  assert.deepEqual(checkConfig(extra('- po_handoff: on\n- agent_effort: high. Exception: xhigh only for hard security work.')).errors, []);
+  assert.match(checkConfig(extra('- agent_effort: high. Exception: very high')).errors.join('\n'), /the word after "Exception:" must be low, medium, high, xhigh or max/);
+  assert.match(checkConfig(extra('- po_handoff: maybe')).errors.join('\n'), /po_handoff must be on or off/);
 });

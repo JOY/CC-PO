@@ -184,7 +184,17 @@ Adjust it if your integration branch uses another merge method.
   A session the PO starts above `agent_effort` for one hard task (an exception
   your `agent_effort` note allows) is recorded as `Effort exception: <level>,
   <reason>` in its brief and in the PO's handoff file, and the PO's effort
-  reconciliation leaves it at that level, also after a PO handoff.
+  reconciliation leaves it at that level, also after a PO handoff. The PO
+  also posts a start comment on the session's issue, and ends the exception
+  with an `effort-exception: ended session=<id> reason=<why>` comment (or an
+  `ended` line in the handoff file); the latest record wins over the brief,
+  which a running session cannot update.
+- **PO handoff (optional).** With `po_handoff: on`, a PO that is retired (a
+  fresh PO each day, a new machine) writes the sub-sessions in flight, effort
+  exceptions, pending owner decisions, holds and next steps to a handoff file
+  in `po_check_in_dir`, and the next PO reads it first, checks it against
+  GitHub and tells each running sub-session its new PO's session id. Left out
+  or `off`, no file is kept.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,
@@ -242,6 +252,23 @@ No config change is needed.
   records `Effort exception: <level>, <reason>` in that sub-session's brief and
   on its line of `<po_check_in_dir>/<line>-po-handoff.md`, and moves a running
   sub-session to `agent_effort` only when neither record names an exception.
+
+### Upgrading to 2.3.0
+
+No config change is needed, with one check.
+
+- An effort exception now has an explicit end and a precedence rule: the PO
+  posts `effort-exception: <level> session=<id> reason=<why>` on the issue when
+  it starts one and `effort-exception: ended session=<id> reason=<why>` when it
+  is over (or writes an `ended` line in the handoff file), and the latest
+  record wins over the brief's static `Effort exception:` line.
+- The PO handoff file is now a documented lifecycle behind the new optional
+  key `po_handoff` (`on` or `off`, default `off`). The file is
+  `<po_check_in_dir>/<repo owner>-<repo>-<slug>-po-handoff.md`, or the file
+  your PO already keeps; set `po_handoff: on` if your POs retire and restart.
+- The config checker now rejects an `Exception:` in the `agent_effort` note
+  whose next word is not `low`, `medium`, `high`, `xhigh` or `max`. Run it
+  once: a note that only says "No exception: ..." must be reworded.
 
 ## License
 

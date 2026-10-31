@@ -26,7 +26,7 @@ export const KNOWN = new Set([
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
   'promotion_reviews', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
-  'po_watchdog', 'po_check_in_dir',
+  'po_watchdog', 'po_check_in_dir', 'po_handoff',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -269,6 +269,9 @@ export function checkConfig(text, { root } = {}) {
   if (values.po_watchdog !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_watchdog)) {
     errors.push('po_watchdog must be on or off');
   }
+  if (values.po_handoff !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_handoff)) {
+    errors.push('po_handoff must be on or off');
+  }
   // The PO passes an effort to start_session, which takes one of a fixed set
   // of levels, so another value would fail every dispatch; a note may follow
   // the level ("xhigh (owner, 2026-10-31)").
@@ -276,6 +279,14 @@ export function checkConfig(text, { root } = {}) {
     const v = values[key];
     if (v !== undefined && !isNone(v) && !/^(low|medium|high|xhigh|max)(?![\w-])/i.test(v)) {
       errors.push(`${key} must start with low, medium, high, xhigh or max (or be none): a PO cannot pass another value as an effort`);
+    }
+  }
+  // A note on agent_effort may allow a higher level for one kind of task as
+  // "Exception: <level> ..."; the PO passes that level to start_session too,
+  // so each one must be a level (the effort-exception: marker is not one).
+  for (const m of (values.agent_effort ?? '').matchAll(/(?<![\w-])exception:\s*[`'"(]*([^\s`'")]*)/gi)) {
+    if (!/^(low|medium|high|xhigh|max)[.,;:]?$/i.test(m[1])) {
+      errors.push('agent_effort: the word after "Exception:" must be low, medium, high, xhigh or max: a PO cannot pass another value as an effort');
     }
   }
   // The check-in file is machine state, never committed, so its folder must
