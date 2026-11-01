@@ -382,9 +382,34 @@ test('the watchdog template is wake-only', () => {
     'mcp__ccd_session_mgmt__get_session',
     'mcp__ccd_session_mgmt__send_message',
   ]);
-  for (const placeholder of ['<po session id>', '<po title>', '<owner/repo>', '<owner>', '<language>', '<idle minutes>', '<check-in file>']) {
+  for (const placeholder of ['<po session id>', '<po title>', '<owner/repo>', '<owner>', '<language>', '<idle minutes>', '<check-in file>', '<restart check>']) {
     assert.ok(prompt.includes(placeholder), placeholder);
   }
+});
+
+// A restart kills the PO while its last activity still looks recent, so the
+// watchdog wakes it on a boot or app start later than that activity, every
+// 15 minutes, and its wake asks for the one-shots and sub-sessions a restart
+// also stopped.
+test('the watchdog wakes its PO right after a restart', () => {
+  const text = read('plugins/cc-po/skills/product-owner/watchdog-template.md').replace(/\r\n/g, '\n');
+  const prompt = text.split('\n---\n')[1];
+  const flat = prompt.replace(/\n\s*/g, ' ');
+  assert.match(flat, /The only local command you may run is the read-only restart check in step 2\./);
+  assert.match(flat, /If either time is LATER than the session's `lastActivityAt`, a restart killed the PO's process: wake it now \(step 4\) with reason "restart"/);
+  assert.match(flat, /\(reason: <reason>\)/);
+  assert.match(flat, /machine boot <boot time>, app start <app start time>/);
+  assert.match(flat, /and any one-shot you had pending/);
+  assert.match(flat, /Wake every linked sub-session \(list_sessions linked\) that still has pending work/);
+  // One read-only command per system the desktop app runs on.
+  assert.match(text, /- Windows \(PowerShell\): `\(Get-CimInstance Win32_OperatingSystem\)\.LastBootUpTime/);
+  assert.match(text, /- macOS \(zsh or bash\): `date -u -r "\$\(sysctl -n kern\.boottime/);
+  assert.match(text, /`cronExpression`: `<m>,<m\+15>,<m\+30>,<m\+45> \* \* \* \*`/);
+  assert.match(text, /`description`: `Every 15 min: wake the <po title> of <owner\/repo> after a machine or app restart, or if it is idle over <idle minutes> min`/);
+  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  assert.match(skill, /Every 15 minutes it looks at the PO session/);
+  assert.match(skill, /A prompt without the template's restart check \(one made from an older template\) is brought up to the current one/);
+  assert.doesNotMatch(skill, /every 30 minutes/i);
 });
 
 // An upstream and its fork (or two repositories with one name) on one machine
