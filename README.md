@@ -166,9 +166,11 @@ Adjust it if your integration branch uses another merge method.
 - **Durable watchdog.** A check-in scheduled inside a session dies with
   its process. So each PO also keeps an app scheduled task, built from
   [`watchdog-template.md`](plugins/cc-po/skills/product-owner/watchdog-template.md),
-  that wakes it every 30 minutes when it has gone quiet (after an app
-  restart, a crash or a usage-limit stop) and points it at its check-in
-  file in `po_check_in_dir`. A run only wakes the PO and archives itself.
+  that looks every 15 minutes and wakes it at once after a machine or app
+  restart (a read-only check of the boot and app start times), or when it
+  has gone quiet (a crash or a usage-limit stop), and points it at its
+  check-in file in `po_check_in_dir`. A run only wakes the PO and archives
+  itself.
   The app asks the owner to approve the task; the PO asks once per machine,
   and may re-enable its own approved watchdog in any turn. The task id starts
   with the repository owner, so a fork and its upstream on one machine each
@@ -269,6 +271,24 @@ No config change is needed, with one check.
 - The config checker now rejects an `Exception:` in the `agent_effort` note
   whose next word is not `low`, `medium`, `high`, `xhigh` or `max`. Run it
   once: a note that only says "No exception: ..." must be reworded.
+
+### Upgrading to 2.4.0
+
+No config change is needed.
+
+- The watchdog wakes its PO right after a machine or app restart. Before,
+  a restart left the PO stopped for up to `check_in_minutes` plus 10 minutes
+  and one more interval, because its last activity still looked recent. Each
+  run now reads the boot and app start times with one read-only command
+  (Windows and macOS commands are in the template) and compares them with
+  the PO's last activity.
+- It runs every 15 minutes instead of 30, at `<m>,<m+15>,<m+30>,<m+45>`.
+- Its wake message also asks the PO to recreate pending one-shots and to
+  wake linked sub-sessions that still have work, since a restart stops them
+  too.
+- An existing watchdog is brought up to the new template by its own PO in
+  the next turn you type (the app may ask you to approve the change). It
+  keeps its id, session and check-in file.
 
 ## License
 

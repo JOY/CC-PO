@@ -124,9 +124,12 @@ session's process, so an app restart, a crash or a usage-limit stop leaves
 the line without a PO until someone notices. Where `po_watchdog` is `on` (the
 default) and the runtime has app scheduled tasks (`create_scheduled_task`),
 each PO keeps one: its watchdog, built from `watchdog-template.md` next to
-this skill. Every 30 minutes it looks at the PO session and, when it has been
-quiet longer than `check_in_minutes` plus 10 minutes, wakes it with a message
-that points at the PO's check-in file. Without scheduled tasks, the PO says
+this skill. Every 15 minutes it looks at the PO session and wakes it with a
+message that points at the PO's check-in file: at once when the machine or
+the app restarted after the PO's last activity (a read-only check of the boot
+and app start times), and otherwise when it has been quiet longer than
+`check_in_minutes` plus 10 minutes. A restart leaves `lastActivityAt` recent,
+so without that check the line would wait the whole idle time for its PO. Without scheduled tasks, the PO says
 once in its first report that nothing will wake it after a stop. When
 `po_watchdog` is `off` and the PO finds a watchdog of its own ("Find it"),
 it disables that task (`enabled: false`), because a scheduled task does not
@@ -155,6 +158,11 @@ read the config.
   id comes from `get_session` with `self`.
   - Found, enabled, and its prompt names the PO's own session id: nothing to
     do, except that the check-in file is the one the prompt names (above).
+    A prompt without the template's restart check (one made from an older
+    template) is brought up to the current one, keeping its id, session and
+    check-in file: prompt, description and schedule with
+    `update_scheduled_task`, in an owner turn ("Owner turns"), since the run
+    gains a local command.
   - Found but naming an earlier session id of this line's PO (an archived or
     missing session): the PO puts its own id into the prompt with
     `update_scheduled_task`, rather than creating a second watchdog. When
@@ -172,10 +180,11 @@ read the config.
 - **The owner's approval.** The app asks the owner to approve a new
   scheduled task. Before the first watchdog on a machine, the PO asks the
   owner one plain question in `report_language`: what the watchdog does
-  (wakes this PO when it has been quiet for that long), what it never does
-  (touch the repository, GitHub or anything else), that it runs only while
-  the app is open, and that each run is a short session that archives
-  itself. The PO writes the answer, the owner's words with the date, to
+  (wakes this PO right after a machine or app restart, or when it has been
+  quiet for that long, reading the boot and app start times with one
+  read-only command), what it never does (touch the repository, GitHub or
+  anything else), that it runs only while the app is open, and that each run
+  is a short session that archives itself. The PO writes the answer, the owner's words with the date, to
   `watchdog-approval.md` in `po_check_in_dir`. A PO that finds a yes there,
   or the owner's approval quoted in the config (on `po_watchdog` or in
   `decision_log`), does not ask again; one that finds a no does not create
@@ -189,14 +198,14 @@ read the config.
   turn, such as a sub-session's message, a CI event or another PO's request,
   and notes it in its next report. If the app still refuses the call in that
   turn, the PO notes it in its digest and does it at the owner's next turn.
-- **Only a wake.** The watchdog's prompt reads one session, sends one
-  message and archives its own run, as the template's does (a hand-made one
-  that the PO keeps must do no more). It never touches the repository,
+- **Only a wake.** The watchdog's prompt reads one session, runs the one
+  read-only restart check, sends one message and archives its own run, as
+  the template's does (a hand-made one that the PO keeps must do no more). It never touches the repository,
   GitHub, the cloud or a file, and never messages another session. Anything
   a wake should do goes into the check-in file, never into the prompt.
 - **Run cleanup.** A run that stops before its last step (a usage limit,
   or an archive the app does not approve) stays in the sidebar, one every
-  30 minutes. On each check-in the PO archives the runs of its own
+  15 minutes. On each check-in the PO archives the runs of its own
   watchdog that are neither archived nor running: the sessions
   `list_task_runs` lists for the task, or, where that tool is missing, the
   `list_sessions` rows titled as the task's runs are (its title when it
@@ -212,7 +221,7 @@ read the config.
   stops its check-ins, it disables the watchdog with
   `update_scheduled_task` (`enabled: false`) and enables it again when work
   resumes, in whatever turn the work resumes ("Owner turns"), so an idle PO
-  is not woken every 30 minutes for nothing. When the
+  is not woken every 15 minutes for nothing. When the
   owner ends the line's PO session, the PO disables its watchdog the same
   way where it still can; otherwise the watchdog keeps finding the session
   archived and does nothing until the line's next PO retargets it.
