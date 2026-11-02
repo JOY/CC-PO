@@ -1,7 +1,7 @@
 // Run with: node --test
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -484,4 +484,51 @@ test('an effort exception ends explicitly, the handoff lifecycle is documented a
   assert.deepEqual(checkConfig(extra('- po_handoff: on\n- agent_effort: high. Exception: xhigh only for hard security work.')).errors, []);
   assert.match(checkConfig(extra('- agent_effort: high. Exception: very high')).errors.join('\n'), /the word after "Exception:" must be low, medium, high, xhigh or max/);
   assert.match(checkConfig(extra('- po_handoff: maybe')).errors.join('\n'), /po_handoff must be on or off/);
+});
+
+test('the Antigravity manifest matches the Claude Code manifest and uses only supported fields', () => {
+  const claude = JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json'));
+  const agy = JSON.parse(read('plugins/cc-po/plugin.json'));
+  const allowed = new Set([
+    'name',
+    'displayName',
+    'description',
+    'version',
+    'author',
+    'homepage',
+    'repository',
+    'suggestedPrompts',
+    'logo',
+    'disabled',
+  ]);
+  for (const key of Object.keys(agy)) {
+    assert.ok(allowed.has(key), `unsupported Antigravity plugin.json field: ${key}`);
+  }
+  for (const shared of ['name', 'displayName', 'version', 'author', 'homepage', 'repository']) {
+    assert.deepEqual(agy[shared], claude[shared], `mismatch on ${shared}`);
+  }
+  assert.ok(Array.isArray(agy.suggestedPrompts) && agy.suggestedPrompts.length === 3);
+  assert.ok(agy.suggestedPrompts.every((p) => typeof p === 'string' && p.trim().length > 0));
+  // Omit mcp_config.json so Antigravity does not mount an unauthenticated Copilot MCP server,
+  // while keeping .mcp.json intact for Claude Code.
+  assert.equal(existsSync(join(root, 'plugins/cc-po/mcp_config.json')), false);
+  assert.equal(existsSync(join(root, 'plugins/cc-po/.mcp.json')), true);
+});
+
+test('the Antigravity host rules map Claude desktop tools without altering the skills', () => {
+  const rules = read('plugins/cc-po/rules/AGENTS.md').replace(/\r\n/g, '\n');
+  for (const term of [
+    'start_session',
+    'agentapi new-conversation',
+    'SendMessage',
+    'send_message',
+    'list_sessions',
+    'AskUserQuestion',
+    'ask_question',
+    'create_scheduled_task',
+    'invoke_subagent',
+    'BypassSandbox: true',
+  ]) {
+    assert.ok(rules.includes(term), `rules/AGENTS.md is missing ${term}`);
+  }
 });

@@ -17,11 +17,17 @@ The skills use the GitHub CLI (`gh`). The plugin also lists an optional
 GitHub connector (GitHub's remote MCP server); each user connects it with
 their own GitHub account, and nothing depends on it.
 
-Install:
+Install in Claude Code:
 
 ```
 /plugin marketplace add JOY/CC-PO
 /plugin install cc-po@cc-po
 ```
+
+Install in Antigravity: copy `plugins/cc-po` to
+`~/.gemini/config/plugins/cc-po` (or `.agents/plugins/cc-po`; use a real
+directory rather than a Windows junction) and restart Antigravity.
+`plugin.json` and `rules/AGENTS.md` adapt the skills' Claude desktop tool
+names to Antigravity without changing the skills.
 
 Full documentation: https://github.com/JOY/CC-PO
