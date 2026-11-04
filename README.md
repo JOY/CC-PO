@@ -163,18 +163,45 @@ Adjust it if your integration branch uses another merge method.
   fully-fielded issues planned into the next sprint, and a dated report
   (`sprint_review_report`) lands through a pull request, with a summary in
   the PO's digest.
-- **Durable watchdog.** A check-in scheduled inside a session dies with
-  its process. So each PO also keeps an app scheduled task, built from
+- **Wake-ups (one gatekeeper per repository).** A check-in scheduled
+  inside a session dies with its process and fires whether or not there is
+  work, and a PO's context (often 400k to 800k tokens) is re-read on every
+  tool step, so an empty check-in costs as much as a real one. Real events
+  already wake a PO at once: a sub-session's turn end, a message from
+  another session, CI and review notifications, a finished background
+  command. So the POs keep no check-in timer. Instead each repository has one
+  app scheduled task, built from
+  [`gatekeeper-template.md`](plugins/cc-po/skills/product-owner/gatekeeper-template.md),
+  that runs every half hour as a fresh, short session on the cheapest model
+  (`gatekeeper_model`, default `claude-haiku-5-5`; the app may ignore the
+  request, so the first PO checks the first run's model). A run reads the
+  session list, a read-only restart check and one read-only `gh` query for
+  the open pull requests, and keeps one small state file in
+  `po_check_in_dir`. It never reads the repository. It leaves a PO alone
+  while it is running or was active in the last `gatekeeper_active_minutes`
+  (60), and otherwise wakes it for the first of four reasons: a machine or
+  app restart; a new pull request of its line (not seen at its last wake) that has been CLEAN or UNSTABLE for
+  30 minutes (any pull request, for the line `coordinator_line` names);
+  sub-sessions idle for over `gatekeeper_active_minutes`, at most every 3
+  hours; or the safety net, no activity and no wake for
+  `gatekeeper_quiet_hours` (4). The wake message names the reason and asks
+  the PO to act on that reason only. The run also reads the context size of
+  each idle PO and sub-session, and when one is above `compact_notice_tokens`
+  (500000) it tells that line's PO, at most once per 6 hours, so the PO can
+  ask the owner to press "Compact session" (a session cannot compact itself,
+  and `/compact` sent as a message is read as text). The first PO of the
+  repository to find no gatekeeper creates it, in a turn the owner typed,
+  after the owner approves it once per machine; the other POs only check that
+  it exists. The task id starts with the repository owner
+  (`<repo owner>-<repo>-po-gatekeeper`), so a fork and its upstream on one
+  machine each get their own. `po_wake: watchdog` keeps the earlier
+  behaviour (one watchdog per PO every 15 minutes, built from
   [`watchdog-template.md`](plugins/cc-po/skills/product-owner/watchdog-template.md),
-  that looks every 15 minutes and wakes it at once after a machine or app
-  restart (a read-only check of the boot and app start times), or when it
-  has gone quiet (a crash or a usage-limit stop), and points it at its
-  check-in file in `po_check_in_dir`. A run only wakes the PO and archives
-  itself.
-  The app asks the owner to approve the task; the PO asks once per machine,
-  and may re-enable its own approved watchdog in any turn. The task id starts
-  with the repository owner, so a fork and its upstream on one machine each
-  get their own. Turn it off with `po_watchdog: off`.
+  plus the in-session check-in), and `po_wake: off` keeps no timer.
+- **Keep the context small.** A PO keeps its state on GitHub and in its
+  check-in file, so a compaction loses nothing, keeps wake turns short, reads
+  only what the wake's reason needs, and never re-reads a long log it has
+  already summarised.
 - **Sub-session model and effort (optional).** `agent_model` and
   `agent_effort` set the model and effort the PO passes to `start_session`
   for each sub-session, and `subagent_effort` the effort of their subagents
@@ -289,6 +316,28 @@ No config change is needed.
 - An existing watchdog is brought up to the new template by its own PO in
   the next turn you type (the app may ask you to approve the change). It
   keeps its id, session and check-in file.
+
+### Upgrading to 2.6.0
+
+One default changes; a config needs no edit.
+
+- `po_wake` is new: `gatekeeper` (the default), `watchdog` (the 2.4.0
+  behaviour) or `off`. The old `po_watchdog` is still read for this version:
+  `off` means `po_wake: off`, `on` means the default. The checker warns
+  while `po_watchdog` is present; replace it with `po_wake`.
+- New optional keys: `gatekeeper_model` (`claude-haiku-5-5`),
+  `gatekeeper_active_minutes` (60), `gatekeeper_quiet_hours` (4),
+  `compact_notice_tokens` (500000) and `coordinator_line` (none, a label from
+  the Lines table).
+- Existing installs: nothing changes until a PO reaches an owner turn. The
+  first PO that finds no gatekeeper then asks you once to approve it (an
+  earlier approval of a watchdog does not cover it, because it also reads the
+  open pull requests and keeps a state file) and creates it. Each PO then
+  disables its own watchdog (where the app refuses, its digest says which
+  task to switch off by hand) and deletes its in-session check-in cron. To keep
+  the old behaviour, set `po_wake: watchdog`.
+- A PO no longer re-reads its whole context every 30 minutes with nothing to
+  do: it is woken by events and by the gatekeeper's reasons.
 
 ## License
 

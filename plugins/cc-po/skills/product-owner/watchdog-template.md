@@ -1,7 +1,11 @@
 # PO watchdog template
 
+Used only when the config sets `po_wake: watchdog`: the default is one
+gatekeeper per repository (`gatekeeper-template.md`), which replaces this
+watchdog and the PO's in-session check-in cron.
+
 The prompt of the durable watchdog each Product Owner creates for itself
-("Durable watchdog" in `SKILL.md`). It is an app scheduled task: it lives
+("Watchdog mode" in `SKILL.md`). It is an app scheduled task: it lives
 outside the PO's session, so it survives a process exit, an app restart and
 a usage-limit stop, which kill in-session crons. Each run starts fresh, looks
 at one PO session and wakes it right after a machine or app restart, or when
@@ -65,7 +69,7 @@ Create the task with `create_scheduled_task`:
 
 A run that stops before its last step (a usage limit, or an archive the app
 does not approve) stays in the sidebar under the task's title. The PO archives them at
-each check-in ("Durable watchdog", Run cleanup in `SKILL.md`), and the
+each check-in ("Wake-ups", Run cleanup in `SKILL.md`), and the
 check-in file below lists it as a step.
 
 ---

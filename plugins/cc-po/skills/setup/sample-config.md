@@ -85,7 +85,12 @@ skill.
 - sub_sessions_max: 5
 - check_in_minutes: 30
 - executors: Codex, "Claude Code", Cursor
-- po_watchdog: on
+- po_wake: gatekeeper
+- gatekeeper_model: claude-haiku-5-5
+- gatekeeper_active_minutes: 60
+- gatekeeper_quiet_hours: 4
+- compact_notice_tokens: 500000
+- coordinator_line: none
 - po_check_in_dir: `~/.claude/po-state`
 - po_handoff: off
 
