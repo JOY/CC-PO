@@ -1,0 +1,16 @@
+{
+  "name": "cc-po",
+  "displayName": "CC Product Owner",
+  "version": "2.6.0",
+  "description": "Product Owner workflow: one PO per product line triages a GitHub Project, starts sub-sessions, accepts their PRs (product-owner); GitHub issue claims (task-claim); repository config (setup).",
+  "author": {
+    "name": "JOY"
+  },
+  "homepage": "https://github.com/JOY/CC-PO",
+  "repository": "https://github.com/JOY/CC-PO",
+  "suggestedPrompts": [
+    "You are the Product Owner of line Platform. Read the product-owner skill, read the board, then hand out work.",
+    "Set up CC-PO for this repository",
+    "Claim issue #123 and start work"
+  ]
+}

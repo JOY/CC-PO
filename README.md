@@ -68,6 +68,46 @@ claude plugin install cc-po@cc-po --scope project
 Each further machine runs the same two commands once; Claude Code does not
 install a plugin from another repository by itself.
 
+### Antigravity
+
+The same `plugins/cc-po` directory also ships an Antigravity manifest
+(`plugin.json`) and host rules (`rules/AGENTS.md`) alongside the Claude Code
+files, with no changes to the skills themselves. Copy `plugins/cc-po` into
+`~/.gemini/config/plugins/cc-po` (or `.agents/plugins/cc-po` in a repository;
+on Windows, copy a real directory rather than an NTFS junction, which
+Antigravity's plugin scanner skips), then restart Antigravity so it discovers
+the plugin:
+
+```powershell
+# Windows (PowerShell)
+Copy-Item -Recurse -Force "<path to CC-PO>\plugins\cc-po" "$env:USERPROFILE\.gemini\config\plugins\cc-po"
+```
+
+```bash
+# macOS / Linux
+cp -R "<path to CC-PO>/plugins/cc-po" ~/.gemini/config/plugins/cc-po
+```
+
+What stays the same and what differs on Antigravity:
+
+- **Same skills, config and GitHub protocol.** `product-owner`, `task-claim`,
+  `setup` and `docs/product-owner-config.md` work unchanged, so Claude Code
+  and Antigravity sessions can share one board safely.
+- **Sub-sessions and subagents.** `rules/AGENTS.md` maps `start_session` to
+  `agentapi new-conversation` (a top-level sidebar conversation that survives
+  server restarts; each sub-session creates its own git worktree first) and
+  the in-process Agent tool to `invoke_subagent`.
+- **Command permissions.** Antigravity's default sandbox blocks network and
+  local-server sockets, so allow the `agentapi`, `gh`, `git fetch` and
+  `git push` prefixes ("always allow" on first prompt or in Settings ->
+  Permission Grants) so the PO and sub-sessions do not stall waiting for
+  manual approval.
+- **Model, effort and watchdog.** Running conversations keep their initial
+  model, and session effort reconciliation is skipped (Codex CLI reviews still
+  receive `-c model_reasoning_effort=<subagent_effort>`). Durable watchdogs
+  use Antigravity's scheduled automations (`agentapi send-message`), enabled
+  by the owner in the Automations dashboard.
+
 ## Set up a repository
 
 ```
@@ -316,6 +356,15 @@ No config change is needed.
 - An existing watchdog is brought up to the new template by its own PO in
   the next turn you type (the app may ask you to approve the change). It
   keeps its id, session and check-in file.
+
+### Upgrading to 2.5.0
+
+No config change is needed, and nothing changes on Claude Code.
+
+- `plugins/cc-po` now includes an Antigravity manifest (`plugin.json`) and
+  host adapter rules (`rules/AGENTS.md`) so the same plugin directory works
+  in Google Antigravity without forking the skills. Claude Code ignores both
+  files.
 
 ### Upgrading to 2.6.0
 
