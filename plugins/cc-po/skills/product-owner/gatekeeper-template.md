@@ -102,20 +102,20 @@ The POs of this repository (title, label, check-in file):
 State file: `<state file>`. Report the owner as <owner>, language <language>. Settings: active <active minutes> min, quiet <quiet hours> h, compact notice above <compact tokens> tokens, coordinator label <coordinator label>.
 
 Steps:
-1. Read the state file. It holds one row per PO title with `last_wake` and `last_compact_notice` (UTC times or `none`). A missing or unreadable file means every value is `none`.
-2. Call `mcp__ccd_session_mgmt__list_sessions` once, with limit 200 and archived sessions left out. For each PO above, take the non-archived session whose title is exactly the PO title; a PO with none, or with two, is skipped (write that in one line). Each row has `isRunning`, `lastActivityAt` and `startedBy`; if a row lacks one, call `mcp__ccd_session_mgmt__get_session` for that session only. Take the current UTC time as <now>.
+1. Read the state file. It holds one row per PO title with `last_wake` and `last_compact_notice` (UTC times or `none`) and `last_wake_prs` (the pull request numbers that the PO's last pull request wake named, comma separated, or `none`). A missing or unreadable file means every value is `none`.
+2. Call `mcp__ccd_session_mgmt__list_sessions` once, with limit 200 and archived sessions left out. For each PO above, take the non-archived session whose title is exactly the PO title; a PO with none, or with two, is skipped (write that in one line). Each row normally has `isRunning`, `lastActivityAt` and `startedBy`; only if a row lacks one, call `mcp__ccd_session_mgmt__get_session` for that session only. Take the current UTC time as <now>.
 3. Restart check. Run this read-only command, which prints two UTC times and changes nothing: `<restart check>`. The first line is when the machine booted; the second is when the Claude app started (it may be empty). If the command fails, write its error in one line and treat the restart reason as false.
 4. Run one read-only query for the open pull requests that are not drafts: `gh pr list --repo <owner/repo> --state open --search "draft:false" --limit 200 --json number,labels,mergeStateStatus,updatedAt`. If it fails, write its error in one line and treat the pull request reason as false.
 5. For each PO, in the order listed:
    - Skip it, with no wake, when its session is running (`isRunning` true) or its `lastActivityAt` is less than <active minutes> minutes before <now>: it is working or just worked, and a real event reaches it.
    - Otherwise wake it for the FIRST reason below that holds, and for no other:
      (a) restart: the boot time or the app start time is LATER than the PO's `lastActivityAt`.
-     (b) pull request: an open pull request with the PO's line label (the label in its row) has `mergeStateStatus` CLEAN or UNSTABLE and an `updatedAt` more than 30 minutes before <now>. For the PO whose label is the coordinator label, any open pull request counts, whatever its labels. Name the pull request numbers.
+     (b) pull request: an open pull request with the PO's line label (the label in its row) has `mergeStateStatus` CLEAN or UNSTABLE and an `updatedAt` more than 30 minutes before <now>. For the PO whose label is the coordinator label, any open pull request counts, whatever its labels. A pull request counts only if it is new since the PO's last wake: its number is not in the PO's `last_wake_prs`, or its `updatedAt` is later than the PO's `last_wake`. So a pull request that waits on the owner wakes the PO once, not every hour. Name the pull request numbers.
      (c) sub-sessions: a non-archived session whose `startedBy` is this PO's session id is not running and has had no activity for more than <active minutes> minutes, and the PO's `last_wake` is none or more than 3 hours before <now>. Name those sessions.
      (d) safety net: the PO's `lastActivityAt` and its `last_wake` are both more than <quiet hours> hours before <now> (or `last_wake` is none).
    - If no reason holds, do not wake it.
 6. Context check. For each non-archived PO session and each non-archived session it started (`startedBy` is the PO's session id) that is not running, call `mcp__ccd_session_mgmt__get_usage` with its session id. A session whose usage is unavailable is skipped. When a session's context is above <compact tokens> tokens, add it to its line's PO (the PO itself, or the session's `startedBy`). Send a PO a notice only if that PO is not running and its `last_compact_notice` is none or more than 6 hours before <now>; one notice lists all its sessions.
-7. Send. For each PO that gets a wake or a notice, send ONE message with `mcp__ccd_session_mgmt__send_message` to its session id; if that is refused, call `SendMessage` with `to` set to that session id and the same text. If both fail, write the error in one line; the next run tries again. Then rewrite the state file whole, with `last_wake` set to <now> for each PO you woke and `last_compact_notice` set to <now> for each PO you sent a notice to, and the other values unchanged.
+7. Send. For each PO that gets a wake or a notice, send ONE message with `mcp__ccd_session_mgmt__send_message` to its session id; if that is refused, call `SendMessage` with `to` set to that session id and the same text. If both fail, write the error in one line; the next run tries again. Then rewrite the state file whole, with `last_wake` set to <now> for each PO you woke and `last_compact_notice` set to <now> for each PO you sent a notice to, and `last_wake_prs` set, for each PO, to its old numbers that are still open pull requests in this run's query plus the numbers you named in a pull request wake to it (`none` if there are none), and the other values unchanged.
    Wake text, with the values filled in:
    "Gatekeeper wake at <now> (reason: <reason>): <detail>. Act on this reason only. Run a full check-in (your check-in file is <check-in file>; use the one you already keep if it differs) only if the reason needs one. Keep no CronCreate check-in and no ScheduleWakeup loop: the gatekeeper and real events wake you. Keep this turn short and read only what the reason needs."
    For reason (a) add: "Machine boot <boot time>, app start <app start time>. A restart stopped your process and your sub-sessions. Tell <owner> in <language> on the first line that you are back and how long you were away, recreate any one-shot you had pending, and resume every linked sub-session (list_sessions linked) that had pending work."
@@ -168,7 +168,7 @@ check-in files: never committed, no secrets. Each run rewrites it whole:
 ```markdown
 # Gatekeeper state (<owner/repo>)
 
-| PO title | last_wake | last_compact_notice |
-| --- | --- | --- |
-| Core Product Owner | 2026-11-04T10:00:00Z | none |
+| PO title | last_wake | last_compact_notice | last_wake_prs |
+| --- | --- | --- | --- |
+| Core Product Owner | 2026-11-04T10:00:00Z | none | 41, 43 |
 ```

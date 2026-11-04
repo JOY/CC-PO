@@ -626,3 +626,16 @@ test('the version is 2.6.0 and the README describes the gatekeeper', () => {
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
 });
+
+// A pull request that waits on the owner must wake its PO once, not every
+// hour: reason (b) counts only a pull request that is new since the last wake.
+test('a pull request wakes its PO once: it must be new since the last wake', () => {
+  const flat = flatten(gatekeeperPrompt());
+  assert.match(flat, /It holds one row per PO title with `last_wake` and `last_compact_notice` \(UTC times or `none`\) and `last_wake_prs`/);
+  assert.match(flat, /A pull request counts only if it is new since the PO's last wake: its number is not in the PO's `last_wake_prs`, or its `updatedAt` is later than the PO's `last_wake`\. So a pull request that waits on the owner wakes the PO once, not every hour\./);
+  assert.match(flat, /`last_wake_prs` set, for each PO, to its old numbers that are still open pull requests in this run's query plus the numbers you named in a pull request wake to it/);
+  assert.match(gatekeeper(), /\| PO title \| last_wake \| last_compact_notice \| last_wake_prs \|/);
+  assert.match(flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n')), /and new since the PO's last wake \(not in its recorded PR numbers, or updated after that wake\), so a PR that waits on the owner wakes the PO once/);
+  // The session fields are normally present; get_session is only the fallback.
+  assert.match(flat, /Each row normally has `isRunning`, `lastActivityAt` and `startedBy`; only if a row lacks one, call `mcp__ccd_session_mgmt__get_session` for that session only/);
+});

@@ -180,7 +180,7 @@ Adjust it if your integration branch uses another merge method.
   `po_check_in_dir`. It never reads the repository. It leaves a PO alone
   while it is running or was active in the last `gatekeeper_active_minutes`
   (60), and otherwise wakes it for the first of four reasons: a machine or
-  app restart; a pull request of its line that has been CLEAN or UNSTABLE for
+  app restart; a new pull request of its line (not seen at its last wake) that has been CLEAN or UNSTABLE for
   30 minutes (any pull request, for the line `coordinator_line` names);
   sub-sessions idle for over `gatekeeper_active_minutes`, at most every 3
   hours; or the safety net, no activity and no wake for

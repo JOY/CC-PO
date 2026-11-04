@@ -170,13 +170,13 @@ is `po_wake: off`, `on` is the default):
   check once, runs one read-only `gh` query for the open, non-draft PRs with
   their labels, `mergeStateStatus` and `updatedAt`, and reads and rewrites
   its one state file (`<repo owner>-<repo>-gatekeeper.md` in
-  `po_check_in_dir`: `last_wake` and `last_compact_notice` per PO). It reads
+  `po_check_in_dir`: `last_wake`, `last_compact_notice` and the PR numbers of the last PR wake per PO). It reads
   nothing from the repository. It skips a PO that is running or was active
   within `gatekeeper_active_minutes`. Otherwise it wakes the PO for the first
   reason that holds: (a) a restart (the boot or app start is later than the
   PO's `lastActivityAt`); (b) one of the line's PRs (label `line:<slug>`;
   any PR for the line `coordinator_line` names) has been CLEAN or UNSTABLE
-  with no update for 30 minutes; (c) one of the PO's sub-sessions has been
+  with no update for 30 minutes, and new since the PO's last wake (not in its recorded PR numbers, or updated after that wake), so a PR that waits on the owner wakes the PO once; (c) one of the PO's sub-sessions has been
   idle longer than `gatekeeper_active_minutes` and the PO's `last_wake` is
   older than 3 hours; (d) the safety net: no activity and no wake for
   `gatekeeper_quiet_hours`. Its wake message names the reason and says to act
