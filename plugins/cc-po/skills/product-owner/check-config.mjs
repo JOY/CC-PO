@@ -26,7 +26,8 @@ export const KNOWN = new Set([
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
   'promotion_reviews', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
-  'po_watchdog', 'po_check_in_dir', 'po_handoff',
+  'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_hours',
+  'compact_notice_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -269,6 +270,24 @@ export function checkConfig(text, { root } = {}) {
   if (values.po_watchdog !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_watchdog)) {
     errors.push('po_watchdog must be on or off');
   }
+  // po_watchdog is the old name of po_wake, accepted for one version: off
+  // means po_wake: off and on means the default. po_wake wins when both are set.
+  if (values.po_wake !== undefined && !/^(gatekeeper|watchdog|off)(?![\w-])/i.test(values.po_wake)) {
+    errors.push('po_wake must be gatekeeper, watchdog or off');
+  }
+  if (values.po_wake !== undefined && values.po_watchdog !== undefined) {
+    warnings.push('po_watchdog is ignored because po_wake is set; remove po_watchdog');
+  } else if (values.po_watchdog !== undefined) {
+    warnings.push('po_watchdog is the old name of po_wake: off means po_wake: off, on means the default (gatekeeper)');
+  }
+  // The gatekeeper's numbers go into a scheduled task's prompt, so each must
+  // be an integer in a range the task can use; a note may follow the number.
+  for (const [key, min, max] of [['gatekeeper_active_minutes', 5, 1440], ['gatekeeper_quiet_hours', 1, 72], ['compact_notice_tokens', 50000, 2000000]]) {
+    const v = values[key];
+    if (v === undefined) continue;
+    const n = /^\d+(?![\w.-])/.test(v) ? parseInt(v, 10) : NaN;
+    if (!(n >= min && n <= max)) errors.push(`${key} must start with an integer from ${min} to ${max}`);
+  }
   if (values.po_handoff !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_handoff)) {
     errors.push('po_handoff must be on or off');
   }
@@ -321,6 +340,13 @@ export function checkConfig(text, { root } = {}) {
       errors.push(`${row}: has an option id but product_line_field is none`);
     }
   });
+
+  // The coordinator line's PO is woken for any pull request, so its label
+  // must be a line of this repository.
+  const coordinator = values.coordinator_line;
+  if (coordinator !== undefined && !isNone(coordinator) && !labels.has(coordinator.replace(/`/g, '').split(/\s/)[0])) {
+    errors.push('coordinator_line must be none or a label in the Lines table');
+  }
 
   // The sprint review runs at a sprint's end, audits each line's scope and
   // writes one dated report per line and sprint.

@@ -485,3 +485,144 @@ test('an effort exception ends explicitly, the handoff lifecycle is documented a
   assert.match(checkConfig(extra('- agent_effort: high. Exception: very high')).errors.join('\n'), /the word after "Exception:" must be low, medium, high, xhigh or max/);
   assert.match(checkConfig(extra('- po_handoff: maybe')).errors.join('\n'), /po_handoff must be on or off/);
 });
+
+// The gatekeeper is one cheap, wake-only task per repository: it reads the
+// session list, one restart check and one gh query, rewrites its state file,
+// messages POs and archives its own run.
+const gatekeeper = () => read('plugins/cc-po/skills/product-owner/gatekeeper-template.md').replace(/\r\n/g, '\n');
+const gatekeeperPrompt = () => gatekeeper().split('\n---\n')[1];
+const flatten = (text) => text.replace(/\n\s*/g, ' ');
+
+test('the gatekeeper template is wake-only', () => {
+  const prompt = gatekeeperPrompt();
+  assert.ok(prompt, 'the prompt sits between two --- lines');
+  assert.deepEqual([...new Set(prompt.match(/mcp__[a-z_]+__[a-z_]+/g))].sort(), [
+    'mcp__ccd_session_mgmt__archive_session',
+    'mcp__ccd_session_mgmt__get_session',
+    'mcp__ccd_session_mgmt__get_usage',
+    'mcp__ccd_session_mgmt__list_sessions',
+    'mcp__ccd_session_mgmt__send_message',
+  ]);
+  const flat = flatten(prompt);
+  assert.match(flat, /no repository, git, cloud or other file action/);
+  assert.match(flat, /The only files you touch are the state file in step 1 and step 7\./);
+  assert.match(flat, /The only commands you may run are the read-only restart check in step 3 and the read-only gh query in step 4\./);
+  assert.match(flat, /Never read the repository or any config\./);
+  assert.match(flat, /no message to any session but the POs listed below/);
+  // The one gh command is a read-only pull request list; no git, no write.
+  assert.deepEqual([...prompt.matchAll(/\bgh ((?:pr|api|issue|repo|run|workflow|project|auth|release|label|search|gist|secret|variable|cache|ruleset) [a-z]+)/g)].map((m) => m[1]), ['pr list']);
+  assert.match(flat, /gh pr list --repo <owner\/repo> --state open --search "draft:false" --limit 200 --json number,labels,mergeStateStatus,updatedAt/);
+  assert.doesNotMatch(prompt, /\bgit [a-z]|\bcurl\b|\bgh api\b|create_scheduled_task|update_scheduled_task/);
+  for (const placeholder of ['<po rows>', '<state file>', '<owner/repo>', '<owner>', '<language>', '<active minutes>', '<quiet hours>', '<compact tokens>', '<coordinator label>', '<restart check>']) {
+    assert.ok(prompt.includes(placeholder), placeholder);
+  }
+  // It archives its own run at the end, like the watchdog.
+  assert.match(flat, /`mcp__ccd_session_mgmt__archive_session` with session_id "self" and reason "gatekeeper run finished"/);
+  assert.match(gatekeeper(), /`notifyOnCompletion`: `false`/);
+});
+
+test('the gatekeeper wakes a PO for four reasons, in order, and skips an active one', () => {
+  const flat = flatten(gatekeeperPrompt());
+  assert.match(flat, /Skip it, with no wake, when its session is running \(`isRunning` true\) or its `lastActivityAt` is less than <active minutes> minutes before <now>/);
+  assert.match(flat, /wake it for the FIRST reason below that holds, and for no other/);
+  assert.match(flat, /\(a\) restart: the boot time or the app start time is LATER than the PO's `lastActivityAt`/);
+  assert.match(flat, /\(b\) pull request: an open pull request with the PO's line label .* has `mergeStateStatus` CLEAN or UNSTABLE and an `updatedAt` more than 30 minutes before <now>\. For the PO whose label is the coordinator label, any open pull request counts/);
+  assert.match(flat, /\(c\) sub-sessions: a non-archived session whose `startedBy` is this PO's session id is not running and has had no activity for more than <active minutes> minutes, and the PO's `last_wake` is none or more than 3 hours before <now>/);
+  assert.match(flat, /\(d\) safety net: the PO's `lastActivityAt` and its `last_wake` are both more than <quiet hours> hours before <now>/);
+  const at = (s) => flat.indexOf(s);
+  assert.ok(at('(a) restart') < at('(b) pull request') && at('(b) pull request') < at('(c) sub-sessions') && at('(c) sub-sessions') < at('(d) safety net'));
+  assert.match(flat, /whose title is exactly the PO title/);
+  // The wake message names the reason and narrows the PO's work.
+  assert.match(flat, /Gatekeeper wake at <now> \(reason: <reason>\): <detail>\. Act on this reason only\. Run a full check-in .* only if the reason needs one\. Keep no CronCreate check-in and no ScheduleWakeup loop/);
+  assert.match(flat, /resume every linked sub-session \(list_sessions linked\) that had pending work/);
+  assert.match(flat, /Machine boot <boot time>, app start <app start time>/);
+});
+
+test('a compaction notice goes above the token threshold, at most once per 6 hours per PO', () => {
+  const flat = flatten(gatekeeperPrompt());
+  assert.match(flat, /call `mcp__ccd_session_mgmt__get_usage` with its session id/);
+  assert.match(flat, /When a session's context is above <compact tokens> tokens/);
+  assert.match(flat, /Send a PO a notice only if that PO is not running and its `last_compact_notice` is none or more than 6 hours before <now>; one notice lists all its sessions/);
+  assert.match(flat, /A session cannot compact itself; '\/compact' sent as a message is read as text, not as a command; and clear_session refuses Remote Control sessions/);
+  assert.match(flat, /tell <owner> in <language> to press 'Compact session' on each of them in the app/);
+  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  assert.match(skill, /above `compact_notice_tokens`, it sends that line's PO one notice, at most once per 6 hours per PO/);
+});
+
+test('the gatekeeper has one task id per repository, one state file and an off-the-half-hour cron', () => {
+  const template = gatekeeper();
+  const row = template.split('\n').find((line) => line.startsWith('| `<task id>`'));
+  assert.ok(row, 'the Values table has a <task id> row');
+  assert.match(row, /`<repo owner>-<repo>-po-gatekeeper`/);
+  assert.match(row, /every run of characters other than `a-z` and `0-9` as one hyphen, no hyphen at either end of `<repo owner>` or `<repo>`/);
+  assert.match(row, /an upstream and its fork \(or two repositories with one name\) on one machine each get their own task/);
+  assert.match(template, /`<repo owner>-<repo>-gatekeeper\.md`/);
+  assert.match(template, /`cronExpression`: `<m>,<m\+30> \* \* \* \*`/);
+  assert.match(flatten(template), /`<m>` is a minute from 2 to 13/);
+  assert.match(template, /`model: <model>`/);
+  assert.match(flatten(template), /The app may ignore that line\. The PO checks the model of the first run with `get_session`/);
+  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  assert.match(skill, /task id `<repo owner>-<repo>-po-gatekeeper`/);
+  assert.match(skill, /`<repo owner>-<repo>-gatekeeper\.md`/);
+  assert.match(skill, /The first PO of the repository that finds no gatekeeper creates it, at an owner turn/);
+  assert.match(skill, /Every other PO only checks that it exists/);
+  assert.doesNotMatch(template.replace(/<repo owner>-<repo>-<slug>-po-checkin/g, ''), /<repo>-<slug>/);
+});
+
+test('under the gatekeeper a PO keeps no check-in cron, retires its watchdog and keeps its context small', () => {
+  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  assert.match(skill, /Under `po_wake: gatekeeper` \(the default\) the PO keeps no in-session check-in \(no `CronCreate` check-in and no `ScheduleWakeup` loop\)/);
+  assert.match(skill, /disables it with `update_scheduled_task` \(`enabled: false`\), and deletes its own in-session check-in cron/);
+  assert.match(skill, /Where the app refuses the disable, the PO says in its digest which task the owner must switch off by hand/);
+  assert.match(skill, /Under `po_wake: watchdog` it also keeps a self check-in/);
+  assert.match(skill, /## Keep the context small/);
+  for (const rule of [/State lives on GitHub .* and in the check-in file/, /A wake turn is short/, /Read only what the reason needs/, /Never re-read a long log, transcript or diff already summarised/]) {
+    assert.match(skill, rule);
+  }
+  assert.match(flatten(gatekeeper()), /The tool has no model parameter/);
+});
+
+test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias for one version', () => {
+  const check = (extra) => checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${extra}`));
+  const err = (extra) => check(extra).errors.join('\n');
+  const clean = { errors: [], warnings: [] };
+  assert.deepEqual(check('- po_wake: gatekeeper\n- gatekeeper_model: claude-haiku-5-5\n- gatekeeper_active_minutes: 60\n- gatekeeper_quiet_hours: 4\n- compact_notice_tokens: 500000\n- coordinator_line: none'), clean);
+  for (const ok of ['- po_wake: watchdog', '- po_wake: off (owner, 2026-11-04)', '- gatekeeper_active_minutes: 5', '- gatekeeper_active_minutes: 1440 (owner)',
+    '- gatekeeper_quiet_hours: 1', '- gatekeeper_quiet_hours: 72', '- compact_notice_tokens: 50000', '- compact_notice_tokens: 2000000', '- coordinator_line: `line:core`', '- coordinator_line: line:core']) {
+    assert.deepEqual(check(ok), clean, ok);
+  }
+  assert.match(err('- po_wake: always'), /po_wake must be gatekeeper, watchdog or off/);
+  assert.match(err('- po_wake: gatekeepers'), /po_wake must be gatekeeper, watchdog or off/);
+  for (const [key, bad, range] of [
+    ['gatekeeper_active_minutes', ['4', '1441', '0', 'sixty', '60.5', '60min', 'none', '-5'], '5 to 1440'],
+    ['gatekeeper_quiet_hours', ['0', '73', 'four', '4h', '1.5'], '1 to 72'],
+    ['compact_notice_tokens', ['49999', '2000001', '500k', 'none', '500000.5'], '50000 to 2000000'],
+  ]) {
+    for (const value of bad) assert.match(err(`- ${key}: ${value}`), new RegExp(`${key} must start with an integer from ${range}`), `${key}: ${value}`);
+  }
+  assert.match(err('- coordinator_line: line:missing'), /coordinator_line must be none or a label in the Lines table/);
+  assert.match(err('- coordinator_line: core'), /coordinator_line must be none or a label in the Lines table/);
+  assert.match(err('- gatekeeper_model:'), /gatekeeper_model has no value/);
+  // The old key is read for one version: it validates as before and the checker warns.
+  assert.deepEqual(check('- po_watchdog: on').errors, []);
+  assert.match(check('- po_watchdog: on').warnings.join('\n'), /po_watchdog is the old name of po_wake: off means po_wake: off, on means the default \(gatekeeper\)/);
+  assert.match(check('- po_watchdog: off').warnings.join('\n'), /old name of po_wake/);
+  assert.match(err('- po_watchdog: maybe'), /po_watchdog must be on or off/);
+  assert.match(check('- po_watchdog: off\n- po_wake: gatekeeper').warnings.join('\n'), /po_watchdog is ignored because po_wake is set/);
+  // Every key is in the schema and the sample, so none reads as prose.
+  const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
+  const sample = parseConfig(read('plugins/cc-po/skills/setup/sample-config.md')).values;
+  for (const [key, fallback] of [['po_wake', 'gatekeeper'], ['gatekeeper_model', 'claude-haiku-5-5'], ['gatekeeper_active_minutes', '60'], ['gatekeeper_quiet_hours', '4'], ['compact_notice_tokens', '500000'], ['coordinator_line', 'none']]) {
+    assert.match(schema, new RegExp(`\\| \`${key}\` \\| \`${fallback}\` \\|`), key);
+    assert.equal(sample[key], fallback, key);
+  }
+  assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
+});
+
+test('the version is 2.6.0 and the README describes the gatekeeper', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.6.0');
+  const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
+  assert.match(readme, /### Upgrading to 2\.6\.0/);
+  assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
+  assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
+});

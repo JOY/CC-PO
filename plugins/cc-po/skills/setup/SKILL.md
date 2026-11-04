@@ -91,7 +91,10 @@ skipping anything the arguments or step 1 settled:
 Everything else takes its schema default unless the user names it. That
 includes the sub-sessions' model and effort (`agent_model`, `agent_effort`,
 `subagent_effort`): left out, a sub-session runs on the PO's own model and
-effort. Mention the defaults you used in the summary so the user can change
+effort. The same goes for the wake-up keys (`po_wake`, `gatekeeper_model`,
+`gatekeeper_active_minutes`, `gatekeeper_quiet_hours`,
+`compact_notice_tokens`, `coordinator_line`): ask about `coordinator_line`
+only when one line's PO coordinates across lines. Mention the defaults you used in the summary so the user can change
 them.
 
 ### 3. Read the board
@@ -182,9 +185,15 @@ Tell the user, in `report_language`:
 - what is left: commit the file; to start a Product Owner, open a Claude
   desktop session in this repository and say "You are the Product Owner of
   line <X>", which loads the `product-owner` skill;
-- that each Product Owner asks once, on its first turn on a machine, to
-  create its durable watchdog (an app scheduled task that wakes it after a
-  stop), unless po_watchdog is off;
+- that the first Product Owner of the repository asks once, on its first
+  turn on a machine, to create the repository's gatekeeper (one app
+  scheduled task that wakes a Product Owner after a stop or when it has
+  work, so no Product Owner keeps its own check-in timer), unless `po_wake`
+  is `off`; the other Product Owners only check that it exists. The
+  gatekeeper's model, thresholds and coordinator line are the keys
+  `gatekeeper_model`, `gatekeeper_active_minutes`, `gatekeeper_quiet_hours`,
+  `compact_notice_tokens` and `coordinator_line`, which take their defaults
+  unless the user names them (`po_watchdog` is the old name of `po_wake`);
 - that sub-sessions need the Claude desktop app's Code tab, and that a
   terminal-only Claude Code session can use `task-claim` and the review
   flow but cannot start or message sub-sessions.
