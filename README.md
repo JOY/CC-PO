@@ -93,20 +93,27 @@ What stays the same and what differs on Antigravity:
 - **Same skills, config and GitHub protocol.** `product-owner`, `task-claim`,
   `setup` and `docs/product-owner-config.md` work unchanged, so Claude Code
   and Antigravity sessions can share one board safely.
-- **Sub-sessions and subagents.** `rules/AGENTS.md` maps `start_session` to
-  `agentapi new-conversation` (a top-level sidebar conversation that survives
-  server restarts; each sub-session creates its own git worktree first) and
-  the in-process Agent tool to `invoke_subagent`.
-- **Command permissions.** Antigravity's default sandbox blocks network and
-  local-server sockets, so allow the `agentapi`, `gh`, `git fetch` and
-  `git push` prefixes ("always allow" on first prompt or in Settings ->
-  Permission Grants) so the PO and sub-sessions do not stall waiting for
-  manual approval.
-- **Model, effort and watchdog.** Running conversations keep their initial
-  model, and session effort reconciliation is skipped (Codex CLI reviews still
-  receive `-c model_reasoning_effort=<subagent_effort>`). Durable watchdogs
-  use Antigravity's scheduled automations (`agentapi send-message`), enabled
-  by the owner in the Automations dashboard.
+- **Sub-sessions as subagents.** `rules/AGENTS.md` maps `start_session` to
+  `invoke_subagent` (`TypeName: "self"`, `Role: "#<n> <short title>"`), so
+  worker sub-sessions stay inside the PO's Subagents pane instead of filling
+  the left sidebar with top-level chats, expose live status through
+  `manage_subagents`, and revive in place via `send_message` after a server
+  restart (each sub-session creates its own git worktree first). Top-level
+  `agentapi new-conversation` is reserved for Product Owner sessions.
+- **Command permissions.** Allow the `agentapi`, `gh`, `git fetch`,
+  `git push` and `git ls-remote` single-command prefixes ("always allow" on
+  first prompt or in Settings -> Permission Grants / Command Allowlist) so
+  the PO and sub-sessions do not stall waiting for manual approval.
+- **Model, effort and shared gatekeeper.** Running conversations and
+  subagents keep their initial model, and session effort reconciliation is
+  skipped (Codex CLI reviews still receive
+  `-c model_reasoning_effort=<subagent_effort>`). Under `po_wake: gatekeeper`
+  (the default), each repository keeps one shared Antigravity scheduled
+  automation (`<repo owner>-<repo>-po-gatekeeper`) running
+  `skills/product-owner/agy-gatekeeper.mjs` every 30 minutes with zero model
+  tokens and zero extra sidebar conversations, waking only the POs of that
+  repository that match a gatekeeper reason (`agentapi send-message`),
+  enabled once by the owner in the Automations dashboard.
 
 ## Set up a repository
 
@@ -387,6 +394,27 @@ One default changes; a config needs no edit.
   the old behaviour, set `po_wake: watchdog`.
 - A PO no longer re-reads its whole context every 30 minutes with nothing to
   do: it is woken by events and by the gatekeeper's reasons.
+
+### Upgrading to 2.7.0
+
+No config change is needed, and nothing changes on Claude Code. On
+Antigravity, re-copy `plugins/cc-po` to `~/.gemini/config/plugins/cc-po` and
+restart Antigravity.
+
+- Antigravity sub-sessions (`start_session`) now run as in-process subagents
+  via `invoke_subagent` (`TypeName: "self"`), inspected with
+  `manage_subagents` and woken or revived in place after a server restart
+  with `send_message`, instead of spawning top-level `agentapi
+  new-conversation` chats in the left sidebar.
+- Antigravity now ships a shared repository gatekeeper
+  (`skills/product-owner/agy-gatekeeper.mjs`), run every 30 minutes by one
+  scheduled sidecar automation (`<repo owner>-<repo>-po-gatekeeper`) for all
+  POs of a repository. It checks the same four reasons (restart, ready PR,
+  idle sub-session, safety net) and context token threshold without spending
+  model tokens or creating sidebar chats, replacing per-PO `-po-watchdog`
+  sidecars and in-session check-in crons.
+- Removed the obsolete `BypassSandbox` parameter reference on `run_command`
+  in `rules/AGENTS.md` to match Antigravity 2.0's tool schema.
 
 ## License
 
