@@ -288,6 +288,10 @@ export function checkConfig(text, { root } = {}) {
     const n = /^\d+(?![\w.-])/.test(v) ? parseInt(v, 10) : NaN;
     if (!(n >= min && n <= max)) errors.push(`${key} must start with an integer from ${min} to ${max}`);
   }
+  // gatekeeper_quiet_hours is no longer used (2.8.0): accepted for one version.
+  if (values.gatekeeper_quiet_hours !== undefined) {
+    warnings.push('gatekeeper_quiet_hours is no longer used: the gatekeeper wakes a quiet PO after gatekeeper_active_minutes; remove it');
+  }
   if (values.po_handoff !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_handoff)) {
     errors.push('po_handoff must be on or off');
   }

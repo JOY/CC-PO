@@ -88,7 +88,6 @@ skill.
 - po_wake: gatekeeper
 - gatekeeper_model: claude-haiku-5-5
 - gatekeeper_active_minutes: 60
-- gatekeeper_quiet_hours: 4
 - compact_notice_tokens: 500000
 - coordinator_line: none
 - po_check_in_dir: `~/.claude/po-state`

@@ -167,26 +167,40 @@ is `po_wake: off`, `on` is the default):
   `gatekeeper-template.md`, task id `<repo owner>-<repo>-po-gatekeeper`.
   Every half hour a fresh, short session, on the cheapest model
   (`gatekeeper_model`), lists the sessions once, runs the read-only restart
-  check once, runs one read-only `gh` query for the open, non-draft PRs with
-  their labels, `mergeStateStatus` and `updatedAt`, and reads and rewrites
-  its one state file (`<repo owner>-<repo>-gatekeeper.md` in
-  `po_check_in_dir`: `last_wake`, `last_compact_notice` and the PR numbers of the last PR wake per PO). It reads
-  nothing from the repository. It skips a PO that is running or was active
-  within `gatekeeper_active_minutes`. Otherwise it wakes the PO for the first
-  reason that holds: (a) a restart (the boot or app start is later than the
-  PO's `lastActivityAt`); (b) one of the line's PRs (label `line:<slug>`;
-  any PR for the line `coordinator_line` names) has been CLEAN or UNSTABLE
-  with no update for 30 minutes, and new since the PO's last wake (not in its recorded PR numbers, or updated after that wake), so a PR that waits on the owner wakes the PO once; (c) one of the PO's sub-sessions has been
-  idle longer than `gatekeeper_active_minutes` and the PO's `last_wake` is
-  older than 3 hours; (d) the safety net: no activity and no wake for
-  `gatekeeper_quiet_hours`. Its wake message names the reason and says to act
-  on that reason only. On waking, the PO does that and keeps no
-  `CronCreate` check-in and no `ScheduleWakeup` loop. After a restart the
-  message also asks it to resume the sub-sessions that had pending work.
-  - **Compaction notice.** The run also reads each idle PO's and
-    sub-session's context size (`get_usage`; a session that reports it
-    unavailable is skipped). When one is above `compact_notice_tokens`, it
-    sends that line's PO one notice, at most once per 6 hours per PO. A
+  check once, and runs one read-only `gh` query for the open, non-draft PRs
+  with their labels, `mergeStateStatus` and `updatedAt`. It keeps no state and
+  writes no file: a PO session's `lastActivityAt` is its memory. It reads
+  nothing from the repository. It skips a PO that is running, since real
+  events reach it. It wakes every other PO when ANY of these holds, and names
+  all that hold: (a) a restart (the boot or app start is later than the PO's
+  `lastActivityAt`); (b) an unseen ready PR: an open, non-draft PR of the line
+  (label `line:<slug>`; any PR for the line `coordinator_line` names) is CLEAN
+  or UNSTABLE and was updated after the PO's `lastActivityAt`, so the PO has
+  not acted since it became ready, with no waiting time; (c) the PO has been
+  quiet: its `lastActivityAt` is `gatekeeper_active_minutes` (60) or more
+  before now, which wakes every PO after a crash or restart and gives at most
+  one wake per PO per active window while it is idle. Its wake message always
+  lists the line's ready PRs (or none) and its idle sub-sessions (not
+  running, idle longer than `gatekeeper_active_minutes`, or none), and says:
+  do one short turn (merge or review the ready PRs, feed or archive the idle
+  sub-sessions, resume work a crash cut off, answer messages), then end the
+  turn. On waking, the PO does that and keeps no `CronCreate` check-in and no
+  `ScheduleWakeup` loop. After a restart the message also asks it to resume
+  the sub-sessions that had pending work. `gatekeeper_quiet_hours` is no
+  longer used.
+  - **Permission prompt.** A run that reads or writes a file outside the
+    project folder stops at a prompt nobody answers, which is why the
+    gatekeeper keeps no state file. The first runs may still show a prompt for
+    its two commands (the restart check and `gh pr list`); the owner approves
+    each once ("always allow"). After creating the task, the PO checks the
+    first run with `list_task_runs` and `list_events` to see that it got past
+    both, and tells the owner in its next report if it did not.
+  - **Compaction notice.** For each PO it wakes, the run also reads
+    the context size of the PO and of its idle sub-sessions (`get_usage`; a
+    session that reports it unavailable is skipped). When one is above
+    `compact_notice_tokens`, it adds one notice to that PO's wake message. It
+    keeps no record of notices, so a notice repeats at most once per active
+    window while the session stays large. A
     session cannot compact itself, and `/compact` sent as a message is read
     as text, so on a notice the PO tells the owner, in `report_language` and
     in its next report, which sessions to compact, and that the owner
@@ -213,6 +227,12 @@ is `po_wake: off`, `on` is the default):
     when this is its fork).
     - Found and enabled: nothing to do, except that its rows match the Lines
       table and its values match the config (above).
+    - Found and enabled, but its prompt names a state file (made by 2.7.0 or
+      earlier): the PO brings it up to the current template with
+      `update_scheduled_task` (prompt and description, keeping its id and
+      schedule), in an owner turn ("Owner turns"), since the old prompt
+      stops at a permission prompt for a file outside the project folder.
+      The old state file is then unused and may be deleted by hand.
     - Found but disabled while any line has work in flight: any PO enables it
       (`enabled: true`), in any turn, where the approval below is on record
       ("Owner turns").
@@ -269,18 +289,19 @@ is `po_wake: off`, `on` is the default):
   scheduled task. Before the first gatekeeper (or, in watchdog mode, the
   first watchdog) on a machine, the PO asks the
   owner one plain question in `report_language`: what the task does (the
-  gatekeeper wakes a PO right after a machine or app restart, or when a PR
-  is ready, its sub-sessions finished, or it has been quiet long, and tells a
-  PO when a session's context is large, reading the boot and app start times
-  with one read-only command and the repository's open PRs with one
-  read-only `gh` query; a watchdog wakes its PO after a restart or a quiet
-  stretch), what it never does (touch the repository or anything else, apart
-  from the gatekeeper's one state file in `po_check_in_dir`), that it runs
+  gatekeeper wakes a PO that is not running right after a machine or app
+  restart, when a PR is ready that the PO has not seen, or when it has been
+  quiet for an hour, and tells a PO when a session's context is large,
+  reading the boot and app start times with one read-only command and the
+  repository's open PRs with one read-only `gh` query; a watchdog wakes its
+  PO after a restart or a quiet stretch), what it never does (touch the
+  repository or anything else, or write any file), that the first runs may
+  ask once to approve those two commands, that it runs
   only while the app is open, and that each run
   is a short session that archives itself. The PO writes the answer, the owner's words with the date, to
   `watchdog-approval.md` in `po_check_in_dir`, naming which task it covers
   (an earlier yes for the watchdog does not cover the gatekeeper, which also
-  reads PRs and keeps a state file, so the PO asks again once). A PO that finds a yes there for the task,
+  reads PRs, so the PO asks again once). A PO that finds a yes there for the task,
   or the owner's approval quoted in the config (on `po_wake` or in
   `decision_log`), does not ask again; one that finds a no does not create
   the task unless the owner raises it again.
@@ -295,10 +316,10 @@ is `po_wake: off`, `on` is the default):
   and notes it in its next report; the same holds for re-enabling the
   gatekeeper. If the app still refuses the call in that
   turn, the PO notes it in its digest and does it at the owner's next turn.
-- **Only a wake.** The gatekeeper's prompt reads the session list and each
-  idle session's context size, runs the one read-only restart check and the
-  one read-only `gh` query, rewrites its one state file, sends its wake and
-  notice messages to the POs and archives its own run, as
+- **Only a wake.** The gatekeeper's prompt reads the session list and the
+  context size of the sessions of the POs it wakes, runs the one read-only
+  restart check and the one read-only `gh` query, writes no file, sends its
+  wake messages (with any notice) to the POs and archives its own run, as
   the template's does; a watchdog's prompt reads one session, runs the restart
   check, sends one message and archives its own run (a hand-made task that the PO keeps must do no more). Neither touches the repository,
   GitHub writes, the cloud or any other file, and neither messages a session
@@ -326,7 +347,7 @@ is `po_wake: off`, `on` is the default):
   owner ends the line's PO session, the PO disables its watchdog the same
   way where it still can; otherwise the watchdog keeps finding the session
   archived and does nothing until the line's next PO retargets it. With the
-  gatekeeper, a PO with no authorized work answers its safety-net wake with
+  gatekeeper, a PO with no authorized work answers its quiet wake with
   a one-line digest and nothing more, and the last PO of the repository to
   end its session disables the gatekeeper the same way where it still can,
   or leaves it, since a run that finds no PO session archives itself.
@@ -340,7 +361,7 @@ it small.
   file, never only in the PO's memory, so a compaction loses nothing.
 - A wake turn is short: it does what the wake's reason needs and ends with
   the digest or one line. A wake for one reason does not become a full
-  check-in; a safety-net wake of a line with nothing to do is one line.
+  check-in; a quiet wake of a line with nothing to do is one line.
 - Read only what the reason needs: the PR the wake names, not the board;
   the one session that is idle, not every sub-session's transcript.
 - Never re-read a long log, transcript or diff already summarised in the
