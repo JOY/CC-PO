@@ -223,20 +223,21 @@ Adjust it if your integration branch uses another merge method.
   (`gatekeeper_model`, default `claude-haiku-5-5`; the app may ignore the
   request, so the first PO checks the first run's model). A run reads the
   session list, a read-only restart check and one read-only `gh` query for
-  the open pull requests, and keeps one small state file in
-  `po_check_in_dir`. It never reads the repository. It leaves a PO alone
-  while it is running or was active in the last `gatekeeper_active_minutes`
-  (60), and otherwise wakes it for the first of four reasons: a machine or
-  app restart; a new pull request of its line (not seen at its last wake) that has been CLEAN or UNSTABLE for
-  30 minutes (any pull request, for the line `coordinator_line` names);
-  sub-sessions idle for over `gatekeeper_active_minutes`, at most every 3
-  hours; or the safety net, no activity and no wake for
-  `gatekeeper_quiet_hours` (4). The wake message names the reason and asks
-  the PO to act on that reason only. The run also reads the context size of
-  each idle PO and sub-session, and when one is above `compact_notice_tokens`
-  (500000) it tells that line's PO, at most once per 6 hours, so the PO can
-  ask the owner to press "Compact session" (a session cannot compact itself,
-  and `/compact` sent as a message is read as text). The first PO of the
+  the open pull requests. It keeps no state file (a run that touches a file
+  outside the project folder stops at a permission prompt nobody answers), and
+  it never reads the repository. It leaves a PO alone while it is running,
+  and otherwise wakes it when any of three things holds: a machine or app
+  restart came after its last activity; a pull request of its line (any
+  pull request, for the line `coordinator_line` names) is CLEAN or UNSTABLE
+  and newer than its last activity, with no waiting time; or its last
+  activity is `gatekeeper_active_minutes` (60) or more old. The wake message
+  names every reason that holds, lists the line's ready pull requests and idle
+  sub-sessions, and asks for one short turn. When a woken PO's session or one
+  of its sub-sessions is above `compact_notice_tokens` (500000), the message
+  adds a notice, so the PO can ask the owner to press "Compact session" (a
+  session cannot compact itself, and `/compact` sent as a message is read as
+  text). The first runs may ask the owner to approve the restart check and
+  `gh pr list` once. The first PO of the
   repository to find no gatekeeper creates it, in a turn the owner typed,
   after the owner approves it once per machine; the other POs only check that
   it exists. The task id starts with the repository owner
@@ -415,6 +416,28 @@ restart Antigravity.
   sidecars and in-session check-in crons.
 - Removed the obsolete `BypassSandbox` parameter reference on `run_command`
   in `rules/AGENTS.md` to match Antigravity 2.0's tool schema.
+
+### Upgrading to 2.8.0
+
+Config edit: remove `gatekeeper_quiet_hours` if you set it. It is no longer
+used, and the checker warns while it is present. On Antigravity, re-copy
+`plugins/cc-po` to `~/.gemini/config/plugins/cc-po` and restart Antigravity.
+
+- The gatekeeper has a new wake rule. For each PO session that is not
+  running, it wakes the PO when a restart came after the PO's last activity,
+  when an open, non-draft pull request of its line is CLEAN or UNSTABLE and
+  newer than that activity (no 30-minute wait, no once-only rule), or when
+  the PO has been quiet for `gatekeeper_active_minutes` (60). The message
+  names every reason that holds, lists the ready pull requests and the idle
+  sub-sessions, and asks for one short turn.
+- The Claude app gatekeeper keeps no state file. A scheduled run that read or
+  wrote a file outside the project folder stopped at a permission prompt that
+  nobody answered, so it woke no one. It now uses each PO session's
+  `lastActivityAt`. The first runs may ask you to approve the restart check
+  and `gh pr list` once ("always allow"). A PO that finds an older gatekeeper
+  prompt updates it at your next turn.
+- `agy-gatekeeper.mjs` follows the same rule and keeps no state file. Its
+  config keeps working: `stateFile` and `quietHours` are ignored.
 
 ## License
 

@@ -8,21 +8,21 @@
 // Config JSON schema (<po_check_in_dir>/<repo owner>-<repo>-agy-gatekeeper.json):
 //   {
 //     "repo": "<owner/repo>",
-//     "stateFile": "<po_check_in_dir>/<repo owner>-<repo>-gatekeeper.md",
 //     "owner": "<owner_name>",
 //     "language": "<report_language>",
 //     "activeMinutes": 60,
-//     "quietHours": 4,
 //     "compactTokens": 500000,
 //     "coordinatorLabel": "none",
 //     "pos": [
 //       { "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }
 //     ]
 //   }
+// Unknown or old keys (stateFile, quietHours) are ignored: the gatekeeper keeps
+// no state file, and uses each PO's last activity as its memory.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, uptime } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -62,52 +62,6 @@ function unquoteArg(value) {
 
 function cleanCellTitle(title) {
   return String(title ?? '').replace(/[|\r\n]+/g, ' ').trim();
-}
-
-export function parseStateFile(text) {
-  const rows = new Map();
-  if (!text) return rows;
-  for (const rawLine of text.replace(/\r\n/g, '\n').split('\n')) {
-    const line = rawLine.trim();
-    if (!line.startsWith('|') || !line.endsWith('|')) continue;
-    const cells = line.slice(1, -1).split('|').map((c) => c.trim());
-    if (cells.length < 4) continue;
-    const [title, lastWakeRaw, lastNoticeRaw, prsRaw] = cells;
-    if (!title || title === 'PO title' || title === 'PO' || /^:?-+:?$/.test(title.replace(/\s+/g, ''))) continue;
-    const prs = (!prsRaw || prsRaw === 'none' || prsRaw === 'never')
-      ? []
-      : prsRaw.split(',').map((s) => Number.parseInt(s.trim(), 10)).filter((n) => Number.isInteger(n) && n > 0);
-    rows.set(title, {
-      lastWake: parseTimeMs(lastWakeRaw) !== null ? lastWakeRaw : 'none',
-      lastCompactNotice: parseTimeMs(lastNoticeRaw) !== null ? lastNoticeRaw : 'none',
-      lastWakePrs: prs,
-    });
-  }
-  return rows;
-}
-
-export function formatStateFile(repo, rowsByTitle, orderedTitles) {
-  const seen = new Set();
-  const titles = [];
-  for (const rawTitle of [...orderedTitles, ...rowsByTitle.keys()]) {
-    const title = cleanCellTitle(rawTitle);
-    if (title && !seen.has(title)) {
-      seen.add(title);
-      titles.push(title);
-    }
-  }
-  const lines = [
-    `# Gatekeeper state (${repo})`,
-    '',
-    '| PO title | last_wake | last_compact_notice | last_wake_prs |',
-    '| --- | --- | --- | --- |',
-  ];
-  for (const title of titles) {
-    const row = rowsByTitle.get(title) ?? { lastWake: 'none', lastCompactNotice: 'none', lastWakePrs: [] };
-    const prs = row.lastWakePrs && row.lastWakePrs.length > 0 ? row.lastWakePrs.join(', ') : 'none';
-    lines.push(`| ${title} | ${row.lastWake || 'none'} | ${row.lastCompactNotice || 'none'} | ${prs} |`);
-  }
-  return `${lines.join('\n')}\n`;
 }
 
 export function resolvePoConversationId(po, checkInText) {
@@ -261,14 +215,24 @@ function isSessionLiveRunning(session, latestRestartMs, nowMs) {
   return (nowMs - latestTouchMs) < STALE_RUNNING_MS;
 }
 
-export function evaluateGatekeeper({ config, stateRows, poInspections, restartTimes, openPrs, nowMs = Date.now() }) {
+function prLabelNames(pr) {
+  return (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean);
+}
+
+// Wake rule (matches gatekeeper-template.md): for each PO that is not running,
+// wake it when ANY of these holds, and name all that hold:
+//   (a) restart: boot or app start is later than the PO's last activity;
+//   (b) unseen ready PR: an open, non-draft PR of the line is CLEAN or UNSTABLE
+//       and was updated after the PO's last activity (no waiting time);
+//   (c) quiet: the PO's last activity is activeMinutes or more before now.
+export function evaluateGatekeeper({ config, poInspections, restartTimes, openPrs, nowMs = Date.now() }) {
   const nowIso = new Date(nowMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const activeMinutes = Number.isInteger(config.activeMinutes) ? config.activeMinutes : 60;
-  const quietHours = Number.isInteger(config.quietHours) ? config.quietHours : 4;
   const compactTokens = Number.isInteger(config.compactTokens) ? config.compactTokens : 500_000;
   const coordinatorLabel = config.coordinatorLabel || 'none';
   const owner = config.owner || 'owner';
   const language = config.language || 'English';
+  const activeWindowMs = activeMinutes * 60_000;
 
   const bootMs = parseTimeMs(restartTimes?.bootTime);
   const appStartMs = parseTimeMs(restartTimes?.appStartTime);
@@ -277,156 +241,96 @@ export function evaluateGatekeeper({ config, stateRows, poInspections, restartTi
   const validOpenPrs = Array.isArray(openPrs)
     ? openPrs.filter((pr) => Number.isInteger(pr?.number) && pr.number > 0)
     : null;
-  const openPrNumbers = new Set((validOpenPrs ?? []).map((pr) => pr.number));
 
   const actions = [];
-  const nextRows = new Map(stateRows);
 
   for (const po of config.pos ?? []) {
     const title = cleanCellTitle(po.title);
     if (!title) continue;
-    const prev = stateRows.get(title) ?? { lastWake: 'none', lastCompactNotice: 'none', lastWakePrs: [] };
     const inspection = poInspections.get(title);
     if (!inspection) {
       actions.push({ title, skipped: 'missing-session' });
       continue;
     }
 
-    const lastWakeMs = parseTimeMs(prev.lastWake);
-    const lastNoticeMs = parseTimeMs(prev.lastCompactNotice);
-    const activeWindowMs = activeMinutes * 60_000;
-    const poIdleMs = nowMs - inspection.po.lastActivityMs;
-    const poRunning = isSessionLiveRunning(inspection.po, latestRestartMs, nowMs);
-
-    let wakeReason = null;
-    let wakeDetail = '';
-    let wokenPrNumbers = [];
-
-    if (!poRunning && poIdleMs >= activeWindowMs) {
-      // (a) restart
-      const restartAfterActivity = latestRestartMs > 0 && latestRestartMs > inspection.po.lastActivityMs;
-      const alreadyWokenForRestart = lastWakeMs !== null && lastWakeMs >= latestRestartMs && (nowMs - lastWakeMs) < activeWindowMs;
-      if (restartAfterActivity) {
-        if (!alreadyWokenForRestart) {
-          wakeReason = 'restart';
-          wakeDetail = 'machine or Antigravity server restarted after your last activity';
-        }
-      } else {
-        // (b) pull request
-        if (validOpenPrs !== null) {
-          const poLabels = Array.isArray(po.labels)
-            ? po.labels
-            : (po.label && po.label !== 'none' ? [po.label] : []);
-          const isCoordinator = coordinatorLabel !== 'none' && poLabels.includes(coordinatorLabel);
-          const readyPrs = validOpenPrs.filter((pr) => {
-            if (pr.mergeStateStatus !== 'CLEAN' && pr.mergeStateStatus !== 'UNSTABLE') return false;
-            const updatedMs = parseTimeMs(pr.updatedAt);
-            if (updatedMs === null || (nowMs - updatedMs) <= 30 * 60_000) return false;
-            const prLabels = (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean);
-            if (!isCoordinator && !poLabels.some((lbl) => prLabels.includes(lbl))) return false;
-            const isNewNumber = !prev.lastWakePrs.includes(pr.number);
-            const updatedAfterWake = lastWakeMs === null || updatedMs > lastWakeMs;
-            return isNewNumber || updatedAfterWake;
-          });
-          if (readyPrs.length > 0) {
-            wakeReason = 'pull request';
-            wokenPrNumbers = readyPrs.map((pr) => pr.number);
-            wakeDetail = `${readyPrs.map((pr) => `#${pr.number} (${pr.mergeStateStatus})`).join(', ')} ready for your acceptance`;
-          }
-        }
-
-        // (c) sub-sessions
-        if (!wakeReason) {
-          const idleSubs = (inspection.subSessions ?? []).filter(
-            (sub) => !isSessionLiveRunning(sub, latestRestartMs, nowMs) && (nowMs - sub.lastActivityMs) > activeWindowMs,
-          );
-          const wakeOldEnough = lastWakeMs === null || (nowMs - lastWakeMs) > 3 * 3600_000;
-          if (idleSubs.length > 0 && wakeOldEnough) {
-            wakeReason = 'sub-sessions';
-            wakeDetail = idleSubs
-              .map((sub) => `${sub.role || sub.conversationId.slice(0, 8)} (${sub.conversationId}, idle ${Math.floor((nowMs - sub.lastActivityMs) / 60_000)} min)`)
-              .join('; ');
-          }
-        }
-
-        // (d) safety net
-        if (!wakeReason) {
-          const quietWindowMs = quietHours * 3600_000;
-          const wakeQuietEnough = lastWakeMs === null || (nowMs - lastWakeMs) > quietWindowMs;
-          if (poIdleMs > quietWindowMs && wakeQuietEnough) {
-            wakeReason = 'safety net';
-            wakeDetail = `no activity for ${quietHours} hours`;
-          }
-        }
-      }
-    }
-
-    // Step 6: Context check
-    let noticeDetail = null;
-    if (!poRunning && (lastNoticeMs === null || (nowMs - lastNoticeMs) > 6 * 3600_000)) {
-      const large = [];
-      if (typeof inspection.po.contextTokens === 'number' && inspection.po.contextTokens > compactTokens) {
-        large.push(`${title} (${inspection.po.conversationId}, ${inspection.po.contextTokens} tokens)`);
-      }
-      for (const sub of inspection.subSessions ?? []) {
-        if (!isSessionLiveRunning(sub, latestRestartMs, nowMs) && typeof sub.contextTokens === 'number' && sub.contextTokens > compactTokens) {
-          large.push(`${sub.role || 'subagent'} (${sub.conversationId}, ${sub.contextTokens} tokens)`);
-        }
-      }
-      if (large.length > 0) {
-        noticeDetail = large.join('; ');
-      }
-    }
-
-    const retainedPrs = validOpenPrs !== null
-      ? prev.lastWakePrs.filter((n) => openPrNumbers.has(n))
-      : [...prev.lastWakePrs];
-    const mergedPrs = [...new Set([...retainedPrs, ...wokenPrNumbers])];
-
-    if (!wakeReason && !noticeDetail) {
-      nextRows.set(title, {
-        lastWake: prev.lastWake,
-        lastCompactNotice: prev.lastCompactNotice,
-        lastWakePrs: retainedPrs,
-      });
-      actions.push({ title, skipped: poRunning ? 'running' : 'no-reason' });
+    const lastActivityMs = inspection.po.lastActivityMs;
+    if (isSessionLiveRunning(inspection.po, latestRestartMs, nowMs)) {
+      actions.push({ title, skipped: 'running' });
       continue;
     }
 
-    const parts = [];
-    if (wakeReason) {
-      let wakeMsg = `Gatekeeper wake at ${nowIso} (reason: ${wakeReason}): ${wakeDetail}. Act on this reason only. Run a full check-in (your check-in file is ${po.checkInFile || 'none'}; use the one you already keep if it differs) only if the reason needs one. Keep no in-session schedule check-in loop: the gatekeeper and real events wake you. Keep this turn short and read only what the reason needs.`;
-      if (wakeReason === 'restart') {
-        wakeMsg += ` Machine boot ${restartTimes?.bootTime || 'unknown'}, app start ${restartTimes?.appStartTime || 'unknown'}. A restart stopped active processes and subagents. Tell ${owner} in ${language} on the first line that you are back and how long you were away, recreate any one-shot timer or background CI watch you had pending, and resume every unfinished sub-session via send_message (or agentapi send-message for top-level sessions).`;
-      }
-      parts.push(wakeMsg);
+    // The line's ready PRs (all of them, for the message) and the unseen ones (for reason b).
+    let readyPrs = null;
+    if (validOpenPrs !== null) {
+      const poLabels = Array.isArray(po.labels)
+        ? po.labels
+        : (po.label && po.label !== 'none' ? [po.label] : []);
+      const isCoordinator = coordinatorLabel !== 'none' && poLabels.includes(coordinatorLabel);
+      readyPrs = validOpenPrs.filter((pr) => {
+        if (pr.mergeStateStatus !== 'CLEAN' && pr.mergeStateStatus !== 'UNSTABLE') return false;
+        if (isCoordinator) return true;
+        const names = prLabelNames(pr);
+        return poLabels.some((lbl) => names.includes(lbl));
+      });
     }
-    if (noticeDetail) {
-      parts.push(
-        `Context notice at ${nowIso}: these sessions of your line hold more than ${compactTokens} tokens of context: ${noticeDetail}. A session cannot compact itself, and '/compact' sent as a message is read as text, not as a slash command. In your next report, tell ${owner} in ${language} to run /compact in each of them in Antigravity. Do not wait for it, and do not read more because of it.`,
-      );
+
+    const reasons = [];
+    const restartAfterActivity = latestRestartMs > 0 && latestRestartMs > lastActivityMs;
+    if (restartAfterActivity) reasons.push('restart');
+    const unseen = (readyPrs ?? []).filter((pr) => {
+      const updatedMs = parseTimeMs(pr.updatedAt);
+      return updatedMs !== null && updatedMs > lastActivityMs;
+    });
+    if (unseen.length > 0) reasons.push('unseen ready PR');
+    const idleMs = nowMs - lastActivityMs;
+    if (idleMs >= activeWindowMs) reasons.push(`quiet for ${Math.floor(idleMs / 60_000)} minutes`);
+
+    if (reasons.length === 0) {
+      actions.push({ title, skipped: 'no-reason' });
+      continue;
+    }
+
+    const idleSubs = (inspection.subSessions ?? []).filter(
+      (sub) => !isSessionLiveRunning(sub, latestRestartMs, nowMs) && (nowMs - sub.lastActivityMs) > activeWindowMs,
+    );
+    const readyText = readyPrs === null
+      ? 'unknown, the gh query failed'
+      : (readyPrs.length > 0 ? readyPrs.map((pr) => `#${pr.number} (${pr.mergeStateStatus})`).join(', ') : 'none');
+    const idleText = idleSubs.length > 0
+      ? idleSubs
+        .map((sub) => `${sub.role || sub.conversationId.slice(0, 8)} (${sub.conversationId}, idle ${Math.floor((nowMs - sub.lastActivityMs) / 60_000)} min)`)
+        .join('; ')
+      : 'none';
+
+    let message = `Gatekeeper wake at ${nowIso} (reasons: ${reasons.join(', ')}). Ready PRs of your line: ${readyText}. Idle sub-sessions of your line: ${idleText}. Do one short turn: merge or review the ready PRs, feed or archive the idle sub-sessions, resume work a crash cut off, answer messages. Then end the turn. Keep no check-in schedule loop: the gatekeeper and real events wake you. Your check-in file is ${po.checkInFile || 'none'}; use the one you already keep if it differs. Read only what this needs.`;
+    if (restartAfterActivity) {
+      message += ` Machine boot ${restartTimes?.bootTime || 'unknown'}, app start ${restartTimes?.appStartTime || 'unknown'}. A restart stopped active processes and subagents. Tell ${owner} in ${language} on the first line that you are back and how long you were away, recreate any one-shot you had pending, and resume every subagent that had pending work.`;
+    }
+
+    // Context notice, only in the message of a PO that is woken in this run.
+    const large = [];
+    if (typeof inspection.po.contextTokens === 'number' && inspection.po.contextTokens > compactTokens) {
+      large.push(`${title} (${inspection.po.conversationId}, ${inspection.po.contextTokens} tokens)`);
+    }
+    for (const sub of inspection.subSessions ?? []) {
+      if (!isSessionLiveRunning(sub, latestRestartMs, nowMs) && typeof sub.contextTokens === 'number' && sub.contextTokens > compactTokens) {
+        large.push(`${sub.role || 'subagent'} (${sub.conversationId}, ${sub.contextTokens} tokens)`);
+      }
+    }
+    if (large.length > 0) {
+      message += `\n\nContext notice at ${nowIso}: these sessions of your line hold more than ${compactTokens} tokens of context: ${large.join('; ')}. A session cannot compact itself, and '/compact' sent as a message is read as text, not as a command. In your next report, tell ${owner} in ${language} to compact each of them in the app. Do not wait for it, and do not read more because of it.`;
     }
 
     actions.push({
       title,
       conversationId: inspection.po.conversationId,
-      wakeReason,
-      notice: Boolean(noticeDetail),
-      message: parts.join('\n\n'),
-      nextRowOnSuccess: {
-        lastWake: wakeReason ? nowIso : prev.lastWake,
-        lastCompactNotice: noticeDetail ? nowIso : prev.lastCompactNotice,
-        lastWakePrs: wakeReason === 'pull request' ? mergedPrs : retainedPrs,
-      },
-      nextRowOnFailure: {
-        lastWake: prev.lastWake,
-        lastCompactNotice: prev.lastCompactNotice,
-        lastWakePrs: retainedPrs,
-      },
+      reasons,
+      notice: large.length > 0,
+      message,
     });
   }
 
-  return { actions, nextRows };
+  return { actions };
 }
 
 export function resolveAgentApiCommand(env = process.env, platform = process.platform, home = homedir()) {
@@ -576,14 +480,8 @@ export function runGatekeeper(configPath, deps = {}) {
   if (!config?.repo || !REPO_RE.test(config.repo)) {
     throw new Error('gatekeeper config requires a valid owner/repo');
   }
-  if (!config.stateFile || typeof config.stateFile !== 'string') {
-    throw new Error('gatekeeper config requires stateFile');
-  }
 
-  const stateFilePath = expandHome(config.stateFile);
   const brainDir = expandHome(config.brainDir || deps.brainDir || join(homedir(), '.gemini', 'antigravity', 'brain'));
-  const stateText = existsSync(stateFilePath) ? readFileSync(stateFilePath, 'utf8') : '';
-  const stateRows = parseStateFile(stateText);
 
   const excludedPoIds = new Set();
   const rawEntries = [];
@@ -646,9 +544,8 @@ export function runGatekeeper(configPath, deps = {}) {
     process.stderr.write(`gatekeeper gh pr list error: ${err.message}\n`);
   }
 
-  const { actions, nextRows } = evaluateGatekeeper({
+  const { actions } = evaluateGatekeeper({
     config,
-    stateRows,
     poInspections,
     restartTimes,
     openPrs,
@@ -664,22 +561,13 @@ export function runGatekeeper(configPath, deps = {}) {
     }
     try {
       send(action.conversationId, action.message);
-      nextRows.set(action.title, action.nextRowOnSuccess);
-      const tags = [action.wakeReason, action.notice ? 'compact-notice' : null].filter(Boolean).join('+');
+      const tags = [action.reasons.join(' + '), action.notice ? 'compact-notice' : null].filter(Boolean).join('+');
       summaryParts.push(`${action.title}: woke (${tags})`);
     } catch (err) {
-      nextRows.set(action.title, action.nextRowOnFailure);
       process.stderr.write(`gatekeeper send error (${action.title}): ${err.message}\n`);
       summaryParts.push(`${action.title}: send-failed`);
     }
   }
-
-  mkdirSync(dirname(stateFilePath), { recursive: true });
-  writeFileSync(
-    stateFilePath,
-    formatStateFile(config.repo, nextRows, (config.pos ?? []).map((p) => p.title)),
-    'utf8',
-  );
 
   const summary = `gatekeeper (${config.repo}): ${summaryParts.join(', ') || 'no POs'}`;
   return { summary, actions };
