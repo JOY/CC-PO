@@ -14,52 +14,57 @@ unchanged.
 
 | The skill says | On Antigravity |
 | --- | --- |
-| `start_session` (a sub-session with a fresh context) | `agentapi new-conversation --title="#<n> <short title>" -- "<brief>"`, run via `run_command` with `BypassSandbox: true`. It starts a top-level conversation in the same project and workspace, listed in the sidebar, and prints its `conversationId`. Include the PO's own `conversationId` in the brief so the sub-session can reply. Because `agentapi new-conversation` opens in the project's main checkout rather than a dedicated worktree, state in the brief's **Environment** section that the sub-session must create and work inside its own git worktree (following the repository's worktree rule, or `.agents/worktrees/<task>` if none) from `origin/<integration_branch>` before editing any file, and remove it after merging. `--model` accepts only `flash_lite`, `flash` or `pro`; omit it unless `agent_model` names one of those, so the owner's default model is used. |
-| `SendMessage`, `mcp__ccd_session_mgmt__send_message` (`to`: a session id) | Try the `send_message` tool (`Recipient`: `<conversationId>`). If it is refused across top-level conversations, run `agentapi send-message "<conversationId>" "<message>"` via `run_command` with `BypassSandbox: true`. |
-| `list_sessions` (`linked: true`), `mcp__ccd_session_mgmt__get_session` | No global session list exists. Record each sub-session's `conversationId` in its issue's `claim:` comment and in the PO's check-in or handoff file, and inspect one with `agentapi get-conversation-metadata <conversationId>` (`BypassSandbox: true`; note it carries no `lastActivityAt`). For in-process subagents, use `manage_subagents` (`Action: "list"`). |
-| `mcp__ccd_session_mgmt__archive_session` | Not available. The owner archives finished conversations from the sidebar. |
-| `set_session_model`, `set_session_effort`, `agent_model`, `agent_effort`, `subagent_effort` | A running conversation keeps its model, and Antigravity has no session effort API. Skip session effort reconciliation and effort exceptions, and note that once in the PO's digest. Keep `-c model_reasoning_effort=<subagent_effort>` on `codex review` when `local_reviews` uses Codex CLI. |
-| The Agent tool (in-process subagent) | `invoke_subagent`: `TypeName: "research"` for read-only work (such as the sprint review's audit or a fresh-context review), `TypeName: "self"` for work that writes (with `Workspace: "share"` when it needs its own worktree), `Model: "inherit"`. |
+| `start_session` (a sub-session with a fresh context) | Call `invoke_subagent` with `TypeName: "self"`, `Role: "#<n> <short title>"`, `Prompt: "<brief>"`, `Workspace: "inherit"`, and `Model: "inherit"` (unless `agent_model` names `flash_lite`, `flash` or `pro`, the only overrides `invoke_subagent` accepts). Include the PO's own `conversationId` in the brief so the sub-session can message the PO with `send_message`, and state in the brief's **Environment** section that the sub-session must create and work inside its own git worktree (following the repository's worktree rule, or `.agents/worktrees/<task>` if none) from `origin/<integration_branch>` before editing any file, and remove it after merging. `invoke_subagent` works in every turn (owner turns, subagent replies and gatekeeper wakes) and keeps worker sub-sessions inside the PO's Subagents pane instead of cluttering the left-hand sidebar. Reserve `agentapi new-conversation --title="<Line> Product Owner" -- "<brief>"` for starting a top-level PO conversation, never for worker sub-sessions. |
+| `SendMessage`, `mcp__ccd_session_mgmt__send_message` (`to`: a session id) | Use the `send_message` tool (`Recipient`: `<conversationId>`) between a PO and its in-process sub-session subagents (sending a message to an idle or restart-stopped subagent also wakes and resumes it in place). Across separate top-level PO conversations, try `send_message` first and fall back to `agentapi send-message "<conversationId>" "<message>"` via `run_command` if refused. |
+| `list_sessions` (`linked: true`), `mcp__ccd_session_mgmt__get_session` | For sub-sessions, call `manage_subagents` (`Action: "list"`) to read each direct subagent's `conversationId` and live state, and read `<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl` when inspecting a subagent's recent turns. Record each sub-session's `conversationId` in its issue's `claim:` comment and in the PO's check-in or handoff file so it survives restarts. For top-level PO conversations, no global list exists; inspect a known id with `agentapi get-conversation-metadata <conversationId>` (carries no `lastActivityAt`). |
+| `mcp__ccd_session_mgmt__archive_session` | Sub-session subagents live inside the PO's Subagents pane rather than the left sidebar, so finished subagents need no archive call (record completion in the check-in file; use `manage_subagents` with `Action: "kill"` only to terminate a stuck running subagent). Top-level conversations have no archive API; the owner archives retired PO conversations from the sidebar. |
+| `set_session_model`, `set_session_effort`, `agent_model`, `agent_effort`, `subagent_effort` | Running conversations and subagents keep their initial model, and Antigravity has no session effort API. Skip session effort reconciliation and effort exceptions, and note that once in the PO's digest. Keep `-c model_reasoning_effort=<subagent_effort>` on `codex review` when `local_reviews` uses Codex CLI. |
+| The Agent tool (in-process subagent) | `invoke_subagent`: `TypeName: "research"` for read-only work (such as the sprint review's audit or a fresh-context review), `TypeName: "self"` for work that writes, `Model: "inherit"`. |
 | `AskUserQuestion` | `ask_question`. |
-| `CronCreate`, `/loop`, a check-in inside the session | The `schedule` tool with a `CronExpression`. It stops when the server restarts, like `CronCreate`. |
-| `create_scheduled_task`, `list_scheduled_tasks`, `update_scheduled_task` (the durable watchdog) | A scheduled automation created by following Antigravity's built-in `automation` skill (`sidecar.json` with `"builtin": "schedule"` and `"args": ["CRON_TZ=<IANA zone> <m>,<m+15>,<m+30>,<m+45> * * * *", "agentapi", "send-message", "<PO conversationId>", "<wake message>"]`). Because `get-conversation-metadata` exposes no `lastActivityAt`, the automation sends the wake directly to the PO conversation without spawning extra sidebar conversations; an active PO treats it as a regular check-in. Only the owner enables it in `[Open Automations Dashboard](sidecar://dashboard)`; never enable it yourself. Without an enabled automation, say in the digest that the PO has no durable watchdog. |
-| Watching CI (Monitor, `gh pr checks --watch`) | `run_command` in the background (short `WaitMsBeforeAsync`, `BypassSandbox: true`): Antigravity wakes the conversation when the command finishes. Never poll in a loop. |
+| `CronCreate`, `/loop`, a check-in inside the session | The `schedule` tool with a `CronExpression` (used only under `po_wake: watchdog`; under `po_wake: gatekeeper` keep no in-session check-in cron once the gatekeeper sidecar is enabled, and cancel any active one with `manage_task`, `Action: "kill"`). Stops when the server restarts, like `CronCreate`. |
+| `create_scheduled_task`, `list_scheduled_tasks`, `update_scheduled_task` (`po_wake: gatekeeper` and `po_wake: watchdog`) | Under `po_wake: gatekeeper` (the default), keep **one** shared scheduled automation per repository at `~/.gemini/config/sidecars/<repo owner>-<repo>-po-gatekeeper/sidecar.json` (`"builtin": "schedule"`, `"restart_policy": "always"`, `"display_name": "PO gatekeeper (<owner/repo>)"`, and `"args": ["CRON_TZ=<IANA zone> <m>,<m+30> * * * *", "<absolute node path>", "<absolute plugin path>/skills/product-owner/agy-gatekeeper.mjs", "<po_check_in_dir>/<repo owner>-<repo>-agy-gatekeeper.json"]`, using absolute paths for `node`, `agy-gatekeeper.mjs` and the JSON config). The JSON config holds `{ "repo": "<owner/repo>", "stateFile": "<po_check_in_dir>/<repo owner>-<repo>-gatekeeper.md", "owner": "<owner_name>", "language": "<report_language>", "activeMinutes": <gatekeeper_active_minutes>, "quietHours": <gatekeeper_quiet_hours>, "compactTokens": <compact_notice_tokens>, "coordinatorLabel": "<coordinator_line>", "pos": [{ "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }] }` (use `"labels": [...]` when a line owns multiple labels). `agy-gatekeeper.mjs` runs every 30 minutes without spawning sidebar conversations or spending model tokens: it inspects all registered POs of `<owner/repo>` and their in-flight subagents from local transcripts, runs the read-only restart check and `gh pr list`, wakes only the POs matching a gatekeeper reason (restart, ready PR, idle sub-session, safety net) or `compact_notice_tokens` via `agentapi send-message`, and rewrites `stateFile`. The first PO of `<owner/repo>` creates the sidecar and JSON config; every other PO registers or updates its row in `pos` and tells the owner in its digest to switch off any older per-PO `-po-watchdog` sidecar. Under `po_wake: watchdog`, create a per-PO 15-minute sidecar (`<m>,<m+15>,<m+30>,<m+45> * * * *`) calling `agentapi send-message "<PO conversationId>" "<wake message>"`. Inspect `~/.gemini/config/sidecars/` in place of `list_scheduled_tasks`. Only the owner enables or disables automations in `[Open Automations Dashboard](sidecar://dashboard)`; never edit `user_config.json` yourself. Without an enabled gatekeeper automation, say in the digest that the PO has no durable wake automation. |
+| Watching CI (Monitor, `gh pr checks --watch`) | `run_command` in the background (short `WaitMsBeforeAsync`, e.g. `500`, `IsDaemon: false`): Antigravity wakes the conversation when the command finishes. Never poll in a loop. |
 | Renaming the session to `<Line> Product Owner` | A running conversation cannot rename itself (unless started via `agentapi new-conversation --title="<Line> Product Owner"`). State `<Line> Product Owner` in `claim:` comments, the check-in file and the first line of each report. |
 | "The owner's next desktop turn" | The owner's next message in the PO's conversation. |
 
-## Commands outside the sandbox
+## Commands and permissions
 
 - `agentapi` reaches the local Antigravity server, and `gh`, `git fetch`,
-  `git push` and `git ls-remote` reach the network. Both are blocked inside
-  the default sandbox. Run each as a single command with
-  `BypassSandbox: true`, never chained with other steps (`&&`, `;`, `||`).
+  `git push` and `git ls-remote` reach the network. Run each as a single
+  command via `run_command`, never chained with other steps (`&&`, `;`, `||`).
 - Keep `toolSummary` identical across calls of the same kind and prefer
   prefix-matchable command shapes (no command substitutions or wrapper
-  binaries), so one "always allow" from the owner covers future calls.
-- Run every other step (reading, editing, builds, tests) inside the sandbox
-  (`BypassSandbox: false`).
-- On the first turn a PO needs unsandboxed commands on a machine, tell the
-  owner once which command prefixes to allow: `agentapi`, `gh`, `git fetch`,
-  `git push`. Without them, every call waits for manual approval.
+  binaries), so one "always allow" or Command Allowlist rule from the owner
+  covers future calls.
+- On the first turn a PO needs network or `agentapi` commands on a machine
+  (or if terminal sandbox / internet policy blocks them), tell the owner once
+  which command prefixes to allow in Settings -> Permission Grants / Command
+  Allowlist: `agentapi`, `gh`, `git fetch`, `git push`, `git ls-remote`.
+  Without them, every call waits for manual approval.
 
 ## Restarts
 
-Antigravity stops in-process subagents and background tasks when its server
-restarts, whereas top-level conversations started with
-`agentapi new-conversation` persist across restarts. After a restart notice:
+Antigravity stops active in-process subagents, in-session `schedule` timers
+and background commands when its server restarts, while top-level PO
+conversations, each subagent's `conversationId` and transcript on disk, and
+git worktrees persist. After a restart notice:
 
 1. Reconcile state from GitHub claims and the PO's check-in or handoff file
    (GitHub wins).
-2. Send each sub-session that still holds unfinished work a short wake
-   message (`send_message` or `agentapi send-message`) to resume from its
-   latest checkpoint.
-3. Re-invoke or revive any stopped in-process subagent needed for the current
-   turn.
+2. Send each unfinished sub-session subagent a short wake message with
+   `send_message` (`Recipient`: its recorded `conversationId`) so it revives
+   in place and resumes from its latest checkpoint rather than starting a
+   duplicate subagent (use `agentapi send-message` only for legacy top-level
+   sub-session conversations).
+3. Restart any stopped background CI watch (`gh pr checks --watch`) or
+   pending one-shot timer (and under `po_wake: watchdog`, recreate the
+   in-session `schedule` timer).
 
 ## Shared boards and limits
 
-- Start at most three sub-sessions at once, or the config's
-  `sub_sessions_normal` / `sub_sessions_max` if lower.
+- Follow the config's `sub_sessions_normal` and `sub_sessions_max` caps across
+  active and unfinished sub-session subagents (or at most three at once when
+  unset).
 - Never claim or start a sub-session for an issue already claimed by a Claude
   Code session (or any other live session). Both hosts speak the same GitHub
   `task-claim` protocol and can share one board safely.

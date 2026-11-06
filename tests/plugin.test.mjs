@@ -8,6 +8,17 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { checkConfig, findRoot, insideRoot, outsidePath, parseConfig, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
+import {
+  evaluateGatekeeper,
+  expandHome,
+  extractActiveCheckInIds,
+  formatStateFile,
+  inspectConversation,
+  parseStateFile,
+  pickAppStartTime,
+  resolvePoConversationId,
+  runGatekeeper,
+} from '../plugins/cc-po/skills/product-owner/agy-gatekeeper.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
@@ -519,6 +530,9 @@ test('the Antigravity host rules map Claude desktop tools without altering the s
   const rules = read('plugins/cc-po/rules/AGENTS.md').replace(/\r\n/g, '\n');
   for (const term of [
     'start_session',
+    'invoke_subagent',
+    'TypeName: "self"',
+    'manage_subagents',
     'agentapi new-conversation',
     'SendMessage',
     'send_message',
@@ -526,11 +540,12 @@ test('the Antigravity host rules map Claude desktop tools without altering the s
     'AskUserQuestion',
     'ask_question',
     'create_scheduled_task',
-    'invoke_subagent',
-    'BypassSandbox: true',
+    'po_wake: gatekeeper',
+    'agy-gatekeeper.mjs',
   ]) {
     assert.ok(rules.includes(term), `rules/AGENTS.md is missing ${term}`);
   }
+  assert.doesNotMatch(rules, /BypassSandbox/);
 });
 
 // The gatekeeper is one cheap, wake-only task per repository: it reads the
@@ -666,12 +681,14 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.6.0 and the README describes the gatekeeper', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.6.0');
+test('the version is 2.7.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.7.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
+  assert.match(readme, /### Upgrading to 2\.7\.0/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
+  assert.match(readme, /agy-gatekeeper\.mjs/);
 });
 
 // A pull request that waits on the owner must wake its PO once, not every
@@ -685,4 +702,203 @@ test('a pull request wakes its PO once: it must be new since the last wake', () 
   assert.match(flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n')), /and new since the PO's last wake \(not in its recorded PR numbers, or updated after that wake\), so a PR that waits on the owner wakes the PO once/);
   // The session fields are normally present; get_session is only the fallback.
   assert.match(flat, /Each row normally has `isRunning`, `lastActivityAt` and `startedBy`; only if a row lacks one, call `mcp__ccd_session_mgmt__get_session` for that session only/);
+});
+
+test('agy-gatekeeper inspects local transcripts, enforces all four reasons in order, and retries on send failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-gk-'));
+  try {
+    const brainDir = join(dir, 'brain');
+    const stateFile = join(dir, 'dos-ludy-gatekeeper.md');
+    const engageCheckIn = join(dir, 'dos-ludy-engage-checkin.md');
+    const meetingsCheckIn = join(dir, 'dos-ludy-meetings-checkin.md');
+
+    const engagePoId = 'a16e550a-bf11-40ca-af35-072cc33d83fd';
+    const engageSubId = 'c2ef3e6f-2fa6-4ef4-873f-8ad7cb686e63';
+    const engageSub2Id = '11111111-2222-3333-4444-555555555555';
+    const researchSubId = 'fee67c34-e369-473d-9e44-a8b83b510850';
+    const meetingsPoId = '735bec20-7c1f-44c7-9045-cb369c545487';
+
+    const writeTranscript = (id, lines, mtimeIso) => {
+      const logDir = join(brainDir, id, '.system_generated', 'logs');
+      mkdirSync(logDir, { recursive: true });
+      const p = join(logDir, 'transcript.jsonl');
+      writeFileSync(p, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`, 'utf8');
+      // Backdate file mtime in tests via nowMs far in the future so mtimeRunning is false.
+      void mtimeIso;
+    };
+
+    // Batched invoke_subagent calls in one PLANNER_RESPONSE (two self + one research),
+    // plus a stale RUNNING step from before a server restart that must not block recovery.
+    writeTranscript(engagePoId, [
+      {
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-06T00:00:00Z',
+        input_tokens: 12000,
+        cache_read_tokens: 510000,
+        tool_calls: [
+          { name: 'invoke_subagent', args: { TypeName: '"self"', Role: '"#2333 CRM worker"' } },
+          { name: 'invoke_subagent', args: { TypeName: '"research"', Role: '"Security reviewer"' } },
+          { name: 'invoke_subagent', args: { TypeName: '"self"', Role: '"#2309 IG worker"' } },
+        ],
+      },
+      {
+        step_index: 2,
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: '2026-11-06T00:00:05Z',
+        content: `Created the following subagent:\n{\n  "conversationId": "${engageSubId}"\n}`,
+      },
+      // Out-of-order completion: step_index 4 (second self worker) finishes before step_index 3 (research)
+      {
+        step_index: 4,
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: '2026-11-06T00:00:06Z',
+        content: `Created the following subagent:\n{\n  "conversationId": "${engageSub2Id}"\n}`,
+      },
+      {
+        step_index: 3,
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: '2026-11-06T00:00:07Z',
+        content: `Created the following subagent:\n{\n  "conversationId": "${researchSubId}"\n}`,
+      },
+      {
+        step_index: 5,
+        type: 'PLANNER_RESPONSE',
+        status: 'RUNNING',
+        created_at: '2026-11-06T00:01:05Z',
+      },
+    ]);
+
+    writeTranscript(engageSubId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'INVALID', created_at: '2026-11-06T00:30:00Z', input_tokens: 1000, cache_read_tokens: 20000 },
+    ]);
+    writeTranscript(engageSub2Id, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-06T00:32:00Z', input_tokens: 1000, cache_read_tokens: 10000 },
+    ]);
+    writeTranscript(researchSubId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-06T00:35:00Z' },
+    ]);
+    writeTranscript(meetingsPoId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-06T04:50:00Z', input_tokens: 5000, cache_read_tokens: 40000 },
+    ]);
+
+    const nowMs = Date.parse('2026-11-06T05:00:00Z');
+    assert.equal(inspectConversation(brainDir, '../not-a-uuid', nowMs), null);
+    const inspected = inspectConversation(brainDir, engagePoId, nowMs);
+    assert.equal(inspected.contextTokens, 522000);
+    assert.equal(inspected.stepRunning, true);
+    assert.equal(inspected.isRunning, false);
+    assert.deepEqual(inspected.spawnedSubagents, [
+      { conversationId: engageSubId, role: '#2333 CRM worker' },
+      { conversationId: engageSub2Id, role: '#2309 IG worker' },
+    ]);
+    assert.equal(
+      pickAppStartTime({ guiStartIso: '2026-11-06T00:00:00Z', serverStartIso: '2026-11-06T03:00:00Z' }),
+      '2026-11-06T03:00:00Z',
+    );
+
+    assert.equal(inspectConversation(brainDir, engageSubId, Date.parse('2026-11-06T00:31:00Z')).stepRunning, false);
+    assert.equal(expandHome('~/po-state/gk.md', '/home/sam'), join('/home/sam', 'po-state/gk.md'));
+
+    writeFileSync(engageCheckIn, `# Check-in\n- PO session: \`${engagePoId}\`\n- Coordinated with peer PO \`${meetingsPoId}\`\n## Completed\n- \`00000000-0000-0000-0000-000000000001\` MERGED\n## Active\n- \`${engageSubId}\` working\n`);
+    writeFileSync(meetingsCheckIn, `# Check-in\nPO session: \`${meetingsPoId}\`\n`);
+    assert.equal(resolvePoConversationId({ conversationId: '11111111-1111-1111-1111-111111111111' }, readFileSync(engageCheckIn, 'utf8')), engagePoId);
+    assert.deepEqual([...extractActiveCheckInIds(readFileSync(engageCheckIn, 'utf8'), new Set([engagePoId, meetingsPoId]))], [engageSubId]);
+
+    const configPath = join(dir, 'dos-ludy-agy-gatekeeper.json');
+    writeFileSync(configPath, JSON.stringify({
+      repo: 'DOS/Ludy',
+      owner: 'JOY',
+      language: 'Vietnamese',
+      activeMinutes: 60,
+      quietHours: 4,
+      compactTokens: 500000,
+      coordinatorLabel: 'line:platform',
+      stateFile,
+      brainDir,
+      pos: [
+        { title: 'Ludy Engage Product Owner', conversationId: engagePoId, label: 'line:social-management', checkInFile: engageCheckIn },
+        { title: 'AI Meeting Notes Product Owner', conversationId: meetingsPoId, label: 'line:meetings', checkInFile: meetingsCheckIn },
+      ],
+    }, null, 2));
+
+    // Pass 1: restart after Engage PO's last activity wins over PR, sub-sessions, and safety net,
+    // while Meetings PO was active 10 min ago (< 60 min) so it is skipped.
+    const sent = [];
+    runGatekeeper(configPath, {
+      nowMs,
+      getRestartTimes: () => ({ bootTime: '2026-11-06T01:00:00Z', appStartTime: '2026-11-06T01:05:00Z' }),
+      queryOpenPrs: () => [{ number: 2660, labels: [{ name: 'line:social-management' }], mergeStateStatus: 'CLEAN', updatedAt: '2026-11-06T02:00:00Z' }],
+      sendMessage: (id, msg) => sent.push({ id, msg }),
+    });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].id, engagePoId);
+    assert.match(sent[0].msg, /\(reason: restart\)/);
+    assert.match(sent[0].msg, /Context notice at 2026-11-06T05:00:00Z/);
+
+    // Pass 1b: 30 minutes after Pass 1 while restart cooldown holds and PO has not run yet ->
+    // does NOT fall through to pull request and consume PR #2660 prematurely.
+    sent.length = 0;
+    runGatekeeper(configPath, {
+      nowMs: Date.parse('2026-11-06T05:30:00Z'),
+      getRestartTimes: () => ({ bootTime: '2026-11-06T01:00:00Z', appStartTime: '2026-11-06T01:05:00Z' }),
+      queryOpenPrs: () => [{ number: 2660, labels: [{ name: 'line:social-management' }], mergeStateStatus: 'CLEAN', updatedAt: '2026-11-06T02:00:00Z' }],
+      sendMessage: (id, msg) => sent.push({ id, msg }),
+    });
+    assert.equal(sent.length, 0);
+
+    // Pass 2: 65 minutes later, no new restart; PR #2660 wakes once, and compact notice is suppressed (< 6h).
+    sent.length = 0;
+    const pass2Ms = Date.parse('2026-11-06T06:05:00Z');
+    runGatekeeper(configPath, {
+      nowMs: pass2Ms,
+      getRestartTimes: () => ({ bootTime: '2026-11-06T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [{ number: 2660, labels: [{ name: 'line:social-management' }], mergeStateStatus: 'CLEAN', updatedAt: '2026-11-06T02:00:00Z' }],
+      sendMessage: (id, msg) => sent.push({ id, msg }),
+    });
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].msg, /\(reason: pull request\): #2660 \(CLEAN\) ready for your acceptance/);
+    assert.doesNotMatch(sent[0].msg, /Context notice/);
+
+    // Pass 3: 30 minutes later, PR #2660 unchanged -> does NOT wake again (waits on owner once).
+    sent.length = 0;
+    runGatekeeper(configPath, {
+      nowMs: Date.parse('2026-11-06T06:35:00Z'),
+      getRestartTimes: () => ({ bootTime: '2026-11-06T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [{ number: 2660, labels: [{ name: 'line:social-management' }], mergeStateStatus: 'CLEAN', updatedAt: '2026-11-06T02:00:00Z' }],
+      sendMessage: (id, msg) => sent.push({ id, msg }),
+    });
+    assert.equal(sent.length, 0);
+
+    // Pass 4: 3h10m after Pass 2, PR merged (openPrs empty), idle sub-session wakes Engage PO;
+    // if sendMessage throws, state file does NOT advance last_wake so the next run retries.
+    const beforeFailState = parseStateFile(readFileSync(stateFile, 'utf8')).get('Ludy Engage Product Owner').lastWake;
+    runGatekeeper(configPath, {
+      nowMs: Date.parse('2026-11-06T09:20:00Z'),
+      getRestartTimes: () => ({ bootTime: '2026-11-06T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [],
+      sendMessage: () => { throw new Error('server busy'); },
+    });
+    assert.equal(parseStateFile(readFileSync(stateFile, 'utf8')).get('Ludy Engage Product Owner').lastWake, beforeFailState);
+
+    runGatekeeper(configPath, {
+      nowMs: Date.parse('2026-11-06T09:21:00Z'),
+      getRestartTimes: () => ({ bootTime: '2026-11-06T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [],
+      sendMessage: (id, msg) => sent.push({ id, msg }),
+    });
+    assert.equal(sent.length, 2); // Engage (sub-sessions) + Meetings (safety net > 4h since 04:50Z)
+    assert.match(sent[0].msg, /\(reason: sub-sessions\)/);
+    assert.match(sent[1].msg, /\(reason: safety net\)/);
+
+    const roundTrip = parseStateFile(formatStateFile('DOS/Ludy', parseStateFile(readFileSync(stateFile, 'utf8')), ['Ludy Engage Product Owner']));
+    assert.equal(roundTrip.get('Ludy Engage Product Owner').lastWake, '2026-11-06T09:21:00Z');
+    assert.equal(typeof evaluateGatekeeper, 'function');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
