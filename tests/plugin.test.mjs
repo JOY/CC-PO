@@ -699,12 +699,13 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.8.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.8.0');
+test('the version is 2.9.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.9.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
   assert.match(readme, /### Upgrading to 2\.8\.0/);
+  assert.match(readme, /### Upgrading to 2\.9\.0/);
   assert.match(readme, /The Claude app gatekeeper keeps no state file/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
@@ -918,4 +919,15 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('POs are peers and shared_core_review is a known key that defaults to none', () => {
+  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  assert.match(skill, /### Peer POs and security review/);
+  assert.match(skill, /POs are peers\. Each works with the owner directly/);
+  assert.match(skill, /`Security review requested \(<Line> PO\)`/);
+  assert.match(skill, /It does not approve the PR/);
+  const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
+  assert.match(schema, /\| `shared_core_review` \| `none` \|/);
+  assert.match(read('plugins/cc-po/skills/setup/sample-config.md'), /^- shared_core_review: none$/m);
 });
