@@ -75,6 +75,7 @@ skill.
 - local_reviews: `codex review -c model_reasoning_effort=<subagent_effort>
   --base origin/main` where the Codex CLI is installed (the level is
   `subagent_effort` below), then a fresh-context subagent review.
+- shared_core_review: none
 - agent_model: claude-sonnet-5-5
 - agent_effort: xhigh
 - subagent_effort: high

@@ -378,6 +378,31 @@ it small.
 - A PO works only its own line. Work found for another line goes to that
   line's PO with SendMessage, or to the owner if the line has no PO.
 
+### Peer POs and security review
+
+- POs are peers. Each works with the owner directly, in its own chat, and
+  routes no decision, approval or acceptance through another line's PO.
+- Each PO runs the acceptance gate of its own line's PRs, and their
+  security review where the repository's rules ask for one (a protected or
+  sensitive path, auth, money, a migration). That review is independent: a
+  fresh-context reviewer, at least as capable as the PO's model, that did
+  not write the change and gets the diff, the issue and the rules, not the
+  PO's verdict.
+- Code that every line builds on can have an owning line
+  (`shared_core_review`). A PR of another line that changes those paths
+  also gets that line's PO's review of those files only, the way a code
+  owner reviews a file. It does not approve the PR: the PR's own PO keeps
+  the acceptance gate, the merge and its questions to the owner.
+  - To ask, the PR's PO comments on the PR, first line
+    `Security review requested (<Line> PO)`, with the full head SHA and the
+    shared-core files it changes; sessions on different accounts may not
+    reach each other with SendMessage, so the comment is the request.
+  - The owning PO searches open PRs for that line on each check-in, reviews
+    those files with a fresh subagent, and answers on the PR with
+    `## Shared-core review (<Line> PO)`, the head SHA it reviewed, the
+    verdict and any blocking findings. If those files change after that
+    head, the review is repeated.
+
 ## What the PO does and does not do
 
 Does: triage the board, check ownership, create and fill issues, write

@@ -24,7 +24,7 @@ export const KNOWN = new Set([
   'production_branch', 'production_merge', 'production_effect', 'promotion_notes',
   'test_environment', 'done_definition',
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
-  'promotion_reviews', 'agent_model', 'agent_effort', 'subagent_effort',
+  'promotion_reviews', 'shared_core_review', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
   'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',

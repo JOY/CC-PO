@@ -439,6 +439,16 @@ used, and the checker warns while it is present. On Antigravity, re-copy
 - `agy-gatekeeper.mjs` follows the same rule and keeps no state file. Its
   config keeps working: `stateFile` and `quietHours` are ignored.
 
+### Upgrading to 2.9.0
+
+- POs are peers: each works with the owner directly and runs the
+  acceptance gate and the independent security review of its own line's
+  PRs ("Peer POs and security review" in the `product-owner` skill).
+- New optional key `shared_core_review` names the line that owns the code
+  every line builds on and its paths. A PR of another line that changes
+  them also gets that line's PO's review of those files only, asked and
+  answered with PR comments. Absent or `none`, nothing changes.
+
 ## License
 
 [MIT](LICENSE)
