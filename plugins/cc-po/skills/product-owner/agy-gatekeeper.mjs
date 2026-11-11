@@ -322,7 +322,7 @@ export function evaluateGatekeeper({ config, poInspections, restartTimes, openPr
     const handoff = handoffTokens !== null
       && typeof inspection.po.contextTokens === 'number' && inspection.po.contextTokens > handoffTokens;
     if (handoff) {
-      message += `\n\nHandoff notice at ${nowIso}: your own context is ${inspection.po.contextTokens} tokens, above the ${handoffTokens} limit. Hand your line to a fresh PO session now, as the product-owner skill's 'PO handoff' says: finish only the step you are in, write the handoff state, tell ${owner} in ${language} on the first line to open a fresh PO session with the exact title ${title}, and the old session should be renamed '${title} (retired ${nowIso.slice(0, 10)})' before the new one opens (ask ${owner} to do it, since a conversation cannot rename itself). Do not read more, and start no new sub-session.`;
+      message += `\n\nHandoff notice at ${nowIso}: your own context is ${inspection.po.contextTokens} tokens, above the ${handoffTokens} limit. Hand your line to a fresh PO session now, as the product-owner skill's 'PO handoff' says: finish only the step you are in, write the handoff state, tell ${owner} in ${language} on the first line to open a fresh PO session with the exact title ${title}, and name the retired conversation (${inspection.po.conversationId}) in the first message for the new one. Do not read more, and start no new sub-session.`;
     }
     const large = [];
     for (const sub of inspection.subSessions ?? []) {

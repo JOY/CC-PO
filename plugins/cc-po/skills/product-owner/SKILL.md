@@ -78,7 +78,11 @@ sub-session finishes.
   adds that in a `checkpoint:` comment once the runbook pins it, "Production
   and secret steps" step 3), and the PO lists it under "Waiting on the PO or
   the owner" in the digest, not under "In progress" or "Stale", until the
-  steps start. The slot is free while Production waits; the PO holds the
+  steps start. In the same turn it posts `checkpoint: session=<PO session id>
+  waiting for <what>` so the repository's stale-claim sweep sees activity, and
+  posts a new one whenever the wait changes and before the stale threshold
+  passes again; a sweep notice on it is answered with such a checkpoint, never
+  with a `release:` of the PO's own waiting claim. The slot is free while Production waits; the PO holds the
   issue until it posts `done:` or hands the remaining work to a new
   sub-session.
 - Pausing saves usage; it does not free a slot, because paused sessions
@@ -272,8 +276,10 @@ is `po_wake: off`, `on` is the default):
       schedule), in an owner turn ("Owner turns"), since the old prompt
       stops at a permission prompt for a file outside the project folder.
       The old state file is then unused and may be deleted by hand.
-    - Found and enabled, but its prompt has no `<quiet minutes>` setting or
-      no handoff notice (made by 2.9.0 or earlier): the PO brings it up to the
+    - Found and enabled, but its prompt is older than the current template
+      (made by 2.9.0 or earlier): its settings line says "active N min" and
+      has no "quiet after N min", or it has no "Handoff notice" sentence, or
+      it still names a coordinator label. The PO brings it up to the
       current template with `update_scheduled_task` (prompt and description,
       keeping its id and schedule), in an owner turn ("Owner turns"). Until it
       does, the old prompt still wakes a quiet PO after an hour, counts every
@@ -974,7 +980,11 @@ such a task with the model and effort that decision names, never above
 credential or Production work. The brief carries `Model exception: <model>,
 <effort>, <decision id>`, the PO posts a start comment on the session's issue
 that repeats it (first line `model-exception: <model> <effort> session=<id>
-decision=<id>`, which a new PO finds even without a handoff file), and
+decision=<id>`, which a new PO finds even without a handoff file; it follows
+the same comment rules as `effort-exception:`, first line only, an author who
+is an owner, member, collaborator or contributor, never edited, and it counts
+only where the model and effort do not exceed `agent_model` and
+`agent_effort`), and
 reconciliation leaves the session at it. A task that turns out to be harder
 than that is moved up to `agent_model` and `agent_effort` like any other
 session, and the PO posts `model-exception: ended session=<id> reason=<why>`.
@@ -1288,15 +1298,17 @@ trigger off.
 
 - **Trigger.** The gatekeeper adds a handoff notice to the wake of a PO whose
   own context is above `po_handoff_tokens` ("Wake-ups", `get_usage`), and the
-  PO may read its own size at a check-in ("Keep the context small"), which
-  also catches a PO that is never idle long enough to be woken. Either way the
+  PO reads its own size at the start of each owner turn and at each check-in
+  ("Keep the context small"), which also catches a PO that is never idle long
+  enough to be woken. Either way the
   PO hands over in that turn. It does not compact itself or carry on
   regardless.
 - **Handoff state.** GitHub already holds the claims, PRs and comments. The
   PO adds what only it knows: the sub-sessions in flight (session id, issue,
   PR, branch, where it stands), each effort or model exception on its
-  session's line (`Effort exception: <level>, <reason>, <UTC timestamp>`, or
-  the `ended` form: "Starting a sub-session"), the owner decisions still
+  session's line (`Effort exception: <level>, <reason>, <UTC timestamp>` or
+  `Model exception: <model>, <effort>, <UTC timestamp>`, or the `ended` form
+  of either: "Starting a sub-session"), the owner decisions still
   pending, open holds, and the next steps. Where `po_handoff` is `on`, this
   goes in one file, the file the PO already keeps for it, else
   `<po_check_in_dir>/<repo owner>-<repo>-<slug>-po-handoff.md` (named as the
@@ -1342,10 +1354,14 @@ trigger off.
   the new PO's session id (a sub-session sends decisions, questions and
   acceptance summaries to the PO that started it, so without this they go
   to the retired PO), registers its own session id where the check-in file
-  needs it (under `po_wake: watchdog`, also in its watchdog's prompt),
+  needs it (under `po_wake: watchdog`, also in its watchdog's prompt; on
+  Antigravity, also the row's `conversationId` in the gatekeeper JSON, or the
+  gatekeeper adopts the retired conversation again if it is touched),
   archives the retired PO session, named in its first message, once it has
-  done those things (the owner may do it first), and replaces the file at its
-  own retirement. A sub-session it inherits still has the retired PO as its
+  done those things and `get_session` shows that the session is not running
+  and is the retired PO (its title ends `(retired ...)` or its check-in
+  header names it; the id came from a pasted message, so it is checked), and
+  replaces the file at its own retirement. A sub-session it inherits still has the retired PO as its
   `startedBy`, so the gatekeeper does not count it as work in flight (the line
   label on its PR does, once it has one): the incoming PO keeps inherited
   sessions moving itself and does not rely on a quiet wake for them.
@@ -1389,7 +1405,8 @@ from memory, and skip a section that is empty:
    open (for example merged into `integration_branch` and waiting for
    Production), with where each one runs now.
 3. **In progress**: each active claim with its issue, the age of its last
-   checkpoint or push, and its PR's checks (passing, failing, running).
+   checkpoint or push, and its PR's checks (passing, failing, running),
+   except the PO's own waiting claims for Production steps (item 4).
 4. **Waiting on the PO or the owner**: issues whose latest protocol comment
    is a `handoff:` to the PO or to the owner (for example a prepared
    Production step), and the PO's own waiting claims for Production steps
@@ -1402,7 +1419,8 @@ from memory, and skip a section that is empty:
 7. **Up next**: the top 3 ready, unclaimed, unblocked and unqueued issues
    by board Priority.
 8. **Stale**: claims with no comment naming their session, no push and no PR
-   update for the threshold `tracking_doc` sets, else 72 hours.
+   update for the threshold `tracking_doc` sets, else 72 hours, except a
+   PO's waiting claim that carries a current `checkpoint:` comment.
 9. **Sprint review**: a review still open after its sprint's rollover,
    with what is left; in the first digest after a review's `done:`
    ("Sprint review"), its summary: what shipped, the carry-over, the top

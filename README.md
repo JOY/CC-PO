@@ -270,8 +270,8 @@ Adjust it if your integration branch uses another merge method.
   which a running session cannot update.
 - **PO handoff.** A PO hands its line to a fresh PO session when its own
   context passes `po_handoff_tokens` (default 250000), not on a clock: the
-  gatekeeper tells a PO it wakes that its context is large (and the PO may
-  read its own size at a check-in), and the PO then writes its handoff and
+  gatekeeper tells a PO it wakes that its context is large (and the PO reads
+  its own size at the start of each owner turn and at each check-in), and the PO then writes its handoff and
   asks you to open a fresh PO session with the same title. With
   `po_handoff: on` the handoff is a file in `po_check_in_dir` (sub-sessions
   in flight, effort exceptions, pending owner decisions, holds and next
