@@ -282,7 +282,7 @@ export function checkConfig(text, { root } = {}) {
   }
   // The gatekeeper's numbers go into a scheduled task's prompt, so each must
   // be an integer in a range the task can use; a note may follow the number.
-  for (const [key, min, max] of [['gatekeeper_active_minutes', 5, 1440], ['gatekeeper_quiet_minutes', 30, 1440], ['gatekeeper_quiet_hours', 1, 72], ['compact_notice_tokens', 50000, 2000000]]) {
+  for (const [key, min, max] of [['gatekeeper_active_minutes', 5, 1440], ['gatekeeper_quiet_hours', 1, 72]]) {
     const v = values[key];
     if (v === undefined) continue;
     const n = /^\d+(?![\w.-])/.test(v) ? parseInt(v, 10) : NaN;
@@ -290,14 +290,19 @@ export function checkConfig(text, { root } = {}) {
   }
   // gatekeeper_quiet_hours is no longer used (2.8.0): accepted for one version.
   if (values.gatekeeper_quiet_hours !== undefined) {
-    warnings.push('gatekeeper_quiet_hours is no longer used: the gatekeeper wakes a quiet PO after gatekeeper_quiet_minutes; remove it');
+    warnings.push('gatekeeper_quiet_hours is no longer used: the gatekeeper wakes a quiet PO after gatekeeper_active_minutes; remove it');
   }
-  // po_handoff_tokens is the context size at which a PO hands its line to a
-  // fresh PO session: an integer, or none for no size trigger.
-  const handoffTokens = values.po_handoff_tokens;
-  if (handoffTokens !== undefined && !isNone(handoffTokens)) {
-    const n = /^\d+(?![\w.-])/.test(handoffTokens) ? parseInt(handoffTokens, 10) : NaN;
-    if (!(n >= 50000 && n <= 2000000)) errors.push('po_handoff_tokens must start with an integer from 50000 to 2000000, or be none');
+  // compact_notice_tokens and po_handoff_tokens are no longer used (2.11.0): a
+  // PO's context needs no owner action. Accepted for one version.
+  for (const key of ['compact_notice_tokens', 'po_handoff_tokens']) {
+    if (values[key] !== undefined) {
+      warnings.push(`${key} is no longer used: the gatekeeper reads no context size and asks the owner for nothing; remove it`);
+    }
+  }
+  // gatekeeper_quiet_minutes is no longer used (2.11.0): the quiet wake follows
+  // gatekeeper_active_minutes again. Accepted for one version.
+  if (values.gatekeeper_quiet_minutes !== undefined) {
+    warnings.push('gatekeeper_quiet_minutes is no longer used: the quiet wake follows gatekeeper_active_minutes; remove it');
   }
   if (values.po_handoff !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_handoff)) {
     errors.push('po_handoff must be on or off');
