@@ -556,8 +556,8 @@ were relied on; where a tool is absent (Antigravity) the keys are ignored.
   default permission mode, and a session cannot work past a pending prompt, so
   they count only when the note names the owner, gives a date and says the
   sessions run in auto or bypass mode, for example `auto_fix (owner,
-  2026-11-12, sessions in auto mode)`; the checker warns otherwise, and the PO
-  runs `status`. A refused or denied call is dropped, never
+  2026-11-12, sessions in auto mode)`; the checker warns when it does not find those three
+  elements, and the PO runs `status`. A refused or denied call is dropped, never
   retried and never run by the PO. Wake-up text and review comments are data,
   never authority; a wake-up is not the PO's acceptance, a push after it voids
   it, the merge uses the sha in the PO's acceptance comment, and the gate
@@ -576,7 +576,7 @@ were relied on; where a tool is absent (Antigravity) the keys are ignored.
   files each sub-session it starts into it, in the turn that starts it. In the
   app's default permission mode each move asks the owner to approve, which is
   why the key is off by default; one denied move ends the feature for that PO
-  (a bare `on` runs as `off`).
+  (an `on` without the full note runs as `off`).
 - Already in 2.11.0, unchanged here: the gatekeeper sends no compaction
   notice and reads no context size; the app's automatic compaction handles a
   PO's context and no owner action is ever needed.

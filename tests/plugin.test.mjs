@@ -1064,7 +1064,12 @@ test('the PR monitor, per-task model and effort and sidebar groups are documente
   assert.match(skill, /Nobody, the PO included, ever calls `set_auto_merge`, and nobody sets `auto_archive_on_close`/);
   assert.match(skill, /\*\*Stop line\*\*: what is not authorized, including `set_auto_merge` and `auto_archive_on_close`/);
   // The PO only reads another session's PR.
-  assert.match(skill, /the PO passes a sub-session's id \(from `list_sessions`\) to `get_status` at its check-ins/);
+  assert.match(skill, /the PO passes the id \(from `list_sessions`\) of a sub-session whose PR is waiting to `get_status` at its check-ins/);
+  // The brief's Process bullet names bind or auto_fix only for the full note.
+  assert.match(skill, /named as `bind` or `auto_fix` only when its note names the owner \(or a decision id\), gives a date and says the sessions run in auto or bypass mode, and otherwise named as `status`/);
+  // A session blocked on a prompt: neither waiting bullet applies, the owner is told once, and the PO records it.
+  assert.match(skill, /this overrides, for these two tools, both the bullet on a session waiting on the user and the bullet on actions a sub-session's permission checks refused or prompted for/);
+  assert.match(skill, /denying the prompt in the app lets it continue on `status`, and records `reported` for it in the check-in file/);
   // Model and effort: every setting the config has, per task, quality first; a capped start is not raised and never asks the owner.
   assert.match(skill, /passing every setting the config has, chosen per task/);
   assert.match(skill, /gets `agent_model` at `agent_effort`, or the level of a recorded effort exception/);
@@ -1072,7 +1077,9 @@ test('the PR monitor, per-task model and effort and sidebar groups are documente
   assert.match(skill, /If a start fails with an error naming `model` or `effort`, the PO repeats the start once without that setting, which makes the session inherit the PO's own, and notes that in its digest/);
   assert.match(skill, /the PO does not try to raise it, since raising above its own level asks the owner to approve/);
   assert.match(skill, /in an ordinary comment on the task's issue \(its first line never starts with `effort-exception:` or `model-exception:`/);
-  assert.match(skill, /once per session: a move that did not take is recorded in the check-in file and not repeated at later check-ins/);
+  assert.match(skill, /a move that did not take is recorded in the check-in file and not repeated for that setting and level/);
+  assert.match(skill, /If the check-in file holds `Sidebar group: off`, it skips this whole step/);
+  assert.match(skill, /\(for a start at an effort-exception level it then records no exception\)/);
   // An effort exception above the PO's own effort cannot be applied, so none is granted or recorded.
   assert.match(skill, /a level above the PO's own effort cannot be applied, so the PO then grants no exception, records none, runs the task at `agent_effort`/);
   // Sidebar groups: off by default, attribution, error skips, no record means no fill, moves only in owner turns, one denial ends it.
@@ -1113,7 +1120,8 @@ test('pr_monitor and sidebar_groups are checked and the prompting values need th
   }
   // A bare value and any note that is not the owner's dated statement about the auto mode still warn.
   for (const v of ['bind', 'auto_fix', 'bind (default)', 'bind (recommended)', 'auto_fix (owner declined)', 'auto_fix (owner, 2026-11-12)',
-    'auto_fix (owner, sessions in auto mode)', 'auto_fix (2026-11-12, sessions in auto mode)', 'bind -', 'auto_fix.']) {
+    'auto_fix (owner, sessions in auto mode)', 'auto_fix (2026-11-12, sessions in auto mode)', 'bind -', 'auto_fix.',
+    'auto_fix (owner, 2026-11-12, will approve automatically)', 'auto_fix (owner, 2026-11-12, autonomous)', 'auto_fix (owner, 2026-13-45, sessions in auto mode)']) {
     const r = checkConfig(extra(`- pr_monitor: ${v}`));
     assert.deepEqual(r.errors, [], v);
     assert.match(r.warnings.join('\n'), /pr_monitor (bind|auto_fix) needs a note naming the owner/, v);
