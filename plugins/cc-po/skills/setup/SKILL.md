@@ -190,7 +190,10 @@ Tell the user, in `report_language`:
   is `off`; the other Product Owners only check that it exists. The
   gatekeeper's model and thresholds are the keys
   `gatekeeper_model`, `gatekeeper_active_minutes`, which takes its default
-  unless the user names them (`po_watchdog` is the old name of `po_wake`; `gatekeeper_quiet_hours`, `gatekeeper_quiet_minutes`, `coordinator_line`, `compact_notice_tokens` and `po_handoff_tokens` are no longer used);
+  unless the user names them. Never write `pr_monitor: bind`, `pr_monitor: auto_fix` or `sidebar_groups: on`
+  with an attribution note the user did not state in this conversation (the app asks the owner to approve what
+  those keys use, so they count only with the owner's note, a date and the statement that sessions run in auto
+  or bypass mode; the defaults `status` and `off` need none). (`po_watchdog` is the old name of `po_wake`; `gatekeeper_quiet_hours`, `gatekeeper_quiet_minutes`, `coordinator_line`, `compact_notice_tokens` and `po_handoff_tokens` are no longer used);
 - that sub-sessions need the Claude desktop app's Code tab, and that a
   terminal-only Claude Code session can use `task-claim` and the review
   flow but cannot start or message sub-sessions.

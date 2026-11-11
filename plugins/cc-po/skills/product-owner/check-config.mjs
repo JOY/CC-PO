@@ -309,27 +309,32 @@ export function checkConfig(text, { root } = {}) {
     errors.push('po_handoff must be on or off');
   }
   // pr_monitor and sidebar_groups drive the desktop app's PR monitor and
-  // sidebar tools (2.12.0); a note may follow the value.
-  // bind, auto_fix and on use tools that ask the owner to approve in the app's
-  // default permission mode, so they count only with the owner's attribution in
-  // a note; without one the PO runs the read-only or off behaviour.
+  // sidebar tools (2.12.0); a note may follow the value. bind, auto_fix and on
+  // use tools that ask the owner to approve in the app's default permission
+  // mode, and a session cannot work past a pending prompt, so they count only
+  // when the note names the owner (or a decision id), gives a date and says
+  // the sessions run in auto or bypass mode; otherwise the PO runs status/off.
+  const attributed = (note) => (/\bowner\b|\bD-\d+\b/i.test(note) && /\d{4}-\d{2}-\d{2}/.test(note) && /\b(auto|bypass)/i.test(note));
+  const unquote = (v) => v.replace(/^`([^`]*)`/, '$1');
   if (values.pr_monitor !== undefined) {
-    if (!/^(off|status|bind|auto_fix)(?![\w-])/i.test(values.pr_monitor)) {
+    const v = unquote(values.pr_monitor);
+    if (!/^(off|status|bind|auto_fix)(?![\w-])/i.test(v)) {
       errors.push('pr_monitor must be off, status, bind or auto_fix');
     } else {
-      const m = values.pr_monitor.match(/^(bind|auto_fix)(?![\w-])\s*(\S?)/i);
-      if (m && !m[2]) {
-        warnings.push(`pr_monitor ${m[1]} needs the owner's attribution in a note, for example "auto_fix (owner, 2026-11-12)"; without one the PO runs status`);
+      const m = v.match(/^(bind|auto_fix)(?![\w-])(.*)$/is);
+      if (m && !attributed(m[2])) {
+        warnings.push(`pr_monitor ${m[1]} needs a note naming the owner (or a decision id), a date and that sessions run in auto or bypass mode, for example "auto_fix (owner, 2026-11-12, sessions in auto mode)"; without it the PO runs status`);
       }
     }
   }
   if (values.sidebar_groups !== undefined) {
-    if (!/^(on|off)(?![\w-])/i.test(values.sidebar_groups)) {
+    const v = unquote(values.sidebar_groups);
+    if (!/^(on|off)(?![\w-])/i.test(v)) {
       errors.push('sidebar_groups must be on or off');
     } else {
-      const m = values.sidebar_groups.match(/^(on)(?![\w-])\s*(\S?)/i);
-      if (m && !m[2]) {
-        warnings.push('sidebar_groups on needs the owner\'s attribution in a note, for example "on (owner, 2026-11-12)"; without one the PO runs off');
+      const m = v.match(/^on(?![\w-])(.*)$/is);
+      if (m && !attributed(m[1])) {
+        warnings.push('sidebar_groups on needs a note naming the owner (or a decision id), a date and that the PO runs in auto or bypass mode, for example "on (owner, 2026-11-12, PO in auto mode)"; without it the PO runs off');
       }
     }
   }
