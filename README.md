@@ -229,8 +229,8 @@ Adjust it if your integration branch uses another merge method.
   and otherwise wakes it when any of three things holds: a machine or app
   restart came after its last activity; a pull request labelled with its own
   line is CLEAN or UNSTABLE and newer than its last activity, with no waiting
-  time; or its last activity is `gatekeeper_quiet_minutes` (180) or more old
-  while its line has work in flight. The wake message
+  time; or its last activity is `gatekeeper_active_minutes` (60) or more old,
+  whether or not its line has work in flight. The wake message
   names every reason that holds, lists the line's ready pull requests and idle
   sub-sessions, and asks for one short turn. It reads no context size and asks the
   owner for nothing about context. The first runs may ask the owner to approve the restart check and
@@ -488,8 +488,8 @@ update the gatekeeper task with `update_scheduled_task` from the new
   the sub-session, so a slot is not held while Production waits.
 - Fewer, cheaper tasks: small review findings go on one weekly cleanup issue
   per line; a small line may be covered by another line's PO; a current owner
-  decision may let low-risk small tasks run on a cheaper model or effort
-  (`Model exception:` in the brief).
+  decision may let read-only lookups run on a cheaper model or effort
+  (`Model exception:` in the brief; narrowed in 2.11.0).
 
 ### Upgrading to 2.11.0
 
@@ -513,9 +513,22 @@ notes.
   case where the owner replaces a PO. The lean-context guidance stays (short
   `--jq` output, wide reads delegated, no transcripts or long files read into
   the PO), and a large sub-session is the PO's to handle, never the owner's.
-- The gatekeeper changes of 2.10.0 stay: only the PO's own line's PRs count,
-  the quiet reason fires after `gatekeeper_quiet_minutes` (180) while the line
-  has work in flight, and the restart reason is unchanged.
+- Of the gatekeeper changes of 2.10.0, only counting the PO's own line's PRs
+  stays (`coordinator_line` is no longer used). The quiet wake goes back to
+  `gatekeeper_active_minutes` (default 60; the owner may set 30) and fires
+  whether or not the line has work in flight, because a PO that is quiet for
+  that long is unusual and a wake inside the one-hour prompt cache is cheap;
+  `gatekeeper_quiet_minutes` is no longer used (the checker warns). The
+  gatekeeper's `gh` query is again the non-draft one, and the restart reason
+  is unchanged.
+- The Model exception is narrowed: only a read-only lookup or search may run
+  on a cheaper model or lower effort under an owner decision, never a session
+  that changes code, documentation, pricing or configuration unless the
+  decision names that kind of work (quality and delivery first, token savings
+  second).
+- An upgraded PO ignores a "Handoff notice" or "Context notice" that an older
+  gatekeeper task still sends, and rewrites any step of its check-in file that
+  asks for a context-size handoff, until a PO updates the gatekeeper task.
 
 ## License
 

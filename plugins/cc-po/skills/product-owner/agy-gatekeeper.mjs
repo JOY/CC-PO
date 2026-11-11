@@ -10,13 +10,12 @@
 //     "repo": "<owner/repo>",
 //     "owner": "<owner_name>",
 //     "language": "<report_language>",
-//     "activeMinutes": 60,        (a sub-session idle this long is listed in the wake)
-//     "quietMinutes": 180,        (a PO with work in flight is woken after this much quiet)
+//     "activeMinutes": 60,        (a PO quiet this long is woken; a sub-session idle this long is listed)
 //     "pos": [
 //       { "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }
 //     ]
 //   }
-// Unknown or old keys (stateFile, quietHours, coordinatorLabel, compactTokens, handoffTokens) are ignored: the
+// Unknown or old keys (stateFile, quietHours, quietMinutes, coordinatorLabel, compactTokens, handoffTokens) are ignored: the
 // gatekeeper keeps no state file, and uses each PO's last activity as its memory.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -116,7 +115,6 @@ export function inspectConversation(brainDir, conversationId, nowMs = Date.now()
 
   const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
   let lastStep = null;
-  let contextTokens = null;
   const spawnedSubagents = [];
   const pendingByStepIndex = new Map();
   const pendingSubagentQueue = [];
@@ -130,9 +128,6 @@ export function inspectConversation(brainDir, conversationId, nowMs = Date.now()
     }
     lastStep = step;
     if (step.type === 'PLANNER_RESPONSE') {
-      if (typeof step.input_tokens === 'number' || typeof step.cache_read_tokens === 'number') {
-        contextTokens = (step.input_tokens || 0) + (step.cache_read_tokens || 0);
-      }
       if (Array.isArray(step.tool_calls)) {
         pendingByStepIndex.clear();
         pendingSubagentQueue.length = 0;
@@ -193,7 +188,6 @@ export function inspectConversation(brainDir, conversationId, nowMs = Date.now()
     stepRunning,
     mtimeRunning,
     isRunning: freshStepRunning || mtimeRunning,
-    contextTokens,
     spawnedSubagents,
   };
 }
@@ -224,18 +218,15 @@ function prLabelNames(pr) {
 //   (b) unseen ready PR: an open, non-draft PR carrying one of the PO's own line
 //       labels is CLEAN or UNSTABLE and was updated after the PO's last activity
 //       (no waiting time); no other PO's PR counts;
-//   (c) quiet: the PO's last activity is quietMinutes or more before now AND its
-//       line has work in flight (an open PR of the line, draft or ready, or an
-//       in-flight sub-session).
+//   (c) quiet: the PO's last activity is activeMinutes or more before now,
+//       whether or not its line has work in flight.
 // No context notice is sent: a PO's context needs no owner action.
 export function evaluateGatekeeper({ config, poInspections, restartTimes, openPrs, nowMs = Date.now() }) {
   const nowIso = new Date(nowMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const activeMinutes = Number.isInteger(config.activeMinutes) ? config.activeMinutes : 60;
-  const quietMinutes = Number.isInteger(config.quietMinutes) ? config.quietMinutes : 180;
   const owner = config.owner || 'owner';
   const language = config.language || 'English';
   const activeWindowMs = activeMinutes * 60_000;
-  const quietWindowMs = quietMinutes * 60_000;
 
   const bootMs = parseTimeMs(restartTimes?.bootTime);
   const appStartMs = parseTimeMs(restartTimes?.appStartTime);
@@ -264,7 +255,6 @@ export function evaluateGatekeeper({ config, poInspections, restartTimes, openPr
 
     // The line's ready PRs (all of them, for the message) and the unseen ones (for reason b).
     let readyPrs = null;
-    let lineHasOpenPr = false;
     if (validOpenPrs !== null) {
       const poLabels = Array.isArray(po.labels)
         ? po.labels
@@ -273,9 +263,7 @@ export function evaluateGatekeeper({ config, poInspections, restartTimes, openPr
         const names = prLabelNames(pr);
         return poLabels.some((lbl) => names.includes(lbl));
       });
-      lineHasOpenPr = ownPrs.length > 0;
-      readyPrs = ownPrs.filter((pr) => pr.isDraft !== true
-        && (pr.mergeStateStatus === 'CLEAN' || pr.mergeStateStatus === 'UNSTABLE'));
+      readyPrs = ownPrs.filter((pr) => pr.mergeStateStatus === 'CLEAN' || pr.mergeStateStatus === 'UNSTABLE');
     }
 
     const reasons = [];
@@ -287,8 +275,7 @@ export function evaluateGatekeeper({ config, poInspections, restartTimes, openPr
     });
     if (unseen.length > 0) reasons.push('unseen ready PR');
     const idleMs = nowMs - lastActivityMs;
-    const workInFlight = lineHasOpenPr || (inspection.subSessions ?? []).length > 0;
-    if (idleMs >= quietWindowMs && workInFlight) reasons.push(`quiet for ${Math.floor(idleMs / 60_000)} minutes with work in flight`);
+    if (idleMs >= activeWindowMs) reasons.push(`quiet for ${Math.floor(idleMs / 60_000)} minutes`);
 
     if (reasons.length === 0) {
       actions.push({ title, skipped: 'no-reason' });
@@ -421,7 +408,7 @@ function defaultQueryOpenPrs(repo) {
   if (!REPO_RE.test(repo)) throw new Error('invalid repo name');
   const res = spawnSync(
     'gh',
-    ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--limit', '200', '--json', 'number,labels,isDraft,mergeStateStatus,updatedAt'],
+    ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--search', 'draft:false', '--limit', '200', '--json', 'number,labels,mergeStateStatus,updatedAt'],
     { encoding: 'utf8', shell: false, timeout: 30_000 },
   );
   if (res.status !== 0) {

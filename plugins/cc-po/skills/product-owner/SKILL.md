@@ -112,8 +112,11 @@ sub-session finishes.
   where the owner agrees, one PO covers it (the Lines table gives it no PO
   session and the covering PO's row in the gatekeeper lists both labels,
   `gatekeeper-template.md`); the PO proposes this in its report and never
-  decides it. A current owner decision may also let low-risk small tasks run
-  cheaper ("Starting a sub-session", model exception).
+  decides it. A current owner decision may let a read-only lookup or search run
+  cheaper ("Starting a sub-session", model exception). Quality and delivery
+  come first and token savings second, so a session that changes code,
+  documentation, pricing or configuration runs on `agent_model` at
+  `agent_effort` unless the owner's decision names that kind of work.
 - What the PO may dispatch on its own: defects, security, reliability and
   cost fixes, follow-ups filed by sessions, design or research tasks, and
   items already on the line's roadmap or backlog. A new customer-visible
@@ -201,9 +204,8 @@ is `po_wake: off`, `on` is the default):
   `gatekeeper-template.md`, task id `<repo owner>-<repo>-po-gatekeeper`.
   Every half hour a fresh, short session, on the cheapest model
   (`gatekeeper_model`), lists the sessions once, runs the read-only restart
-  check once, and runs one read-only `gh` query for the open PRs
-  (drafts included) with their labels, `isDraft`, `mergeStateStatus` and
-  `updatedAt`. It keeps no state and
+  check once, and runs one read-only `gh` query for the open, non-draft PRs
+  with their labels, `mergeStateStatus` and `updatedAt`. It keeps no state and
   writes no file: a PO session's `lastActivityAt` is its memory. It reads
   nothing from the repository. It skips a PO that is running, since real
   events reach it. It wakes every other PO when ANY of these holds, and names
@@ -212,14 +214,14 @@ is `po_wake: off`, `on` is the default):
   the PO's own line label (`line:<slug>`, and no other PO's PR) is CLEAN
   or UNSTABLE and was updated after the PO's `lastActivityAt`, so the PO has
   not acted since it became ready, with no waiting time; (c) the PO has been
-  quiet: its `lastActivityAt` is `gatekeeper_quiet_minutes` (180) or more
-  before now and its line has work in flight (an open PR with the line's
-  label, draft or ready, or a non-archived sub-session the PO started), which
-  gives at most one such wake per PO per quiet window. A line with nothing
-  in flight is never woken for being quiet; a crash or restart is reason (a)
-  and is unchanged. Its wake message always
+  quiet: its `lastActivityAt` is `gatekeeper_active_minutes` (60 by
+  default; JOY set 30 for DOS.AI) or more before now, whether or not its line
+  has work in flight, because a PO that is quiet that long is unusual and a
+  wake inside the one-hour prompt cache is cheap; it wakes every PO after a
+  crash or restart and gives at most one wake per PO per active window while
+  it is idle. Its wake message always
   lists the line's ready PRs (or none) and its idle sub-sessions (not
-  running, idle longer than `gatekeeper_active_minutes` (60), or none), and says:
+  running, idle longer than `gatekeeper_active_minutes`, or none), and says:
   do one short turn (merge or review the ready PRs, feed or archive the idle
   sub-sessions, resume work a crash cut off, answer messages), then end the
   turn. On waking, the PO does that and keeps no `CronCreate` check-in and no
@@ -265,10 +267,10 @@ is `po_wake: off`, `on` is the default):
       stops at a permission prompt for a file outside the project folder.
       The old state file is then unused and may be deleted by hand.
     - Found and enabled, but its prompt is older than the current template
-      (made by 2.10.0 or earlier): its settings line has no "quiet after N
-      min", or it still has a context check (a step that calls `get_usage`, a
-      "Context notice" or a "Handoff notice"), or it still names a
-      coordinator label. The PO brings it up to the
+      (made by 2.10.0 or earlier): it still has a context check (a step that
+      calls `get_usage`, a "Context notice" or a "Handoff notice"), or a quiet
+      reason that needs work in flight, or it still names a coordinator
+      label. The PO brings it up to the
       current template with `update_scheduled_task` (prompt and description,
       keeping its id and schedule), in an owner turn ("Owner turns"). Until it
       does, the old prompt still wakes a quiet PO after an hour, counts every
@@ -332,8 +334,7 @@ is `po_wake: off`, `on` is the default):
   owner one plain question in `report_language`: what the task does (the
   gatekeeper wakes a PO that is not running right after a machine or app
   restart, when a PR is ready that the PO has not seen, or when it has been
-  quiet for `gatekeeper_quiet_minutes` (180 by default) while its line has
-  work in flight,
+  quiet for `gatekeeper_active_minutes` (60 by default),
   reading the boot and app start times with one read-only command and the
   repository's open PRs with one read-only `gh` query; a watchdog wakes its
   PO after a restart or a quiet stretch), what it never does (touch the
@@ -358,11 +359,10 @@ is `po_wake: off`, `on` is the default):
   and notes it in its next report; the same holds for re-enabling the
   gatekeeper. If the app still refuses the call in that
   turn, the PO notes it in its digest and does it at the owner's next turn.
-- **Only a wake.** The gatekeeper's prompt reads the session list and the
-  context size of the sessions of the POs it wakes, runs the one read-only
-  restart check and the one read-only `gh` query, writes no file, sends its
-  wake messages (with any notice) to the POs and archives its own run, as
-  the template's does; a watchdog's prompt reads one session, runs the restart
+- **Only a wake.** The gatekeeper's prompt reads the session list, runs the one
+  read-only restart check and the one read-only `gh` query, writes no file,
+  sends its wake messages to the POs and archives its own run, as the
+  template's does; a watchdog's prompt reads one session, runs the restart
   check, sends one message and archives its own run (a hand-made task that the PO keeps must do no more). Neither touches the repository,
   GitHub writes, the cloud or any other file, and neither messages a session
   that is not a PO. Anything
@@ -428,6 +428,11 @@ it small.
   current. A sub-session whose context has grown large is the PO's to handle,
   never the owner's: it finishes that session (its issue and PR hold the
   state) and starts a fresh one, or leaves it to the app's compaction.
+- A PO ignores any "Handoff notice" or "Context notice" in a wake message (a
+  gatekeeper task made by 2.10.0 or earlier still sends them until a PO
+  updates it, "Find it") and any step of its check-in file that asks for a
+  context-size handoff; it rewrites such a step to "context needs no owner
+  action" at its next turn and never passes either on to the owner.
 
 ## Lines and names
 
@@ -962,11 +967,12 @@ with no recorded exception is moved as before.
 
 Model exception. Where a current owner decision in the `decision_log` (or, with
 `decision_log: none`, the config's owner instructions) lets
-low-risk small tasks run on a cheaper model or a lower effort (for example
-a small documentation or tooling fix, or a read-only lookup), the PO starts
-such a task with the model and effort that decision names, never above
-`agent_model` and `agent_effort`, and never for security, money, migration,
-credential or Production work. The brief carries `Model exception: <model>,
+read-only lookups and searches (a task that writes nothing) run on a cheaper
+model or a lower effort, the PO starts such a task with the model and effort
+that decision names, never above `agent_model` and `agent_effort`, never for
+a session that changes code, documentation, pricing or configuration unless
+the decision names that kind of work, and never for security, money,
+migration, credential or Production work. The brief carries `Model exception: <model>,
 <effort>, <decision id>`, the PO posts a start comment on the session's issue
 that repeats it (first line `model-exception: <model> <effort> session=<id>
 decision=<id>`, which a new PO finds even without a handoff file; it follows
@@ -1316,8 +1322,9 @@ owner ended. Nothing in this skill asks for one.
   product-owner skill, the handoff, then the board. The retired PO session is
   <session id>."), which also carries, where `po_handoff` is `off`, the
   pending owner decisions and holds in a few lines. Where the app offers a
-  rename tool it renames its own session to `<title> (retired <UTC date>)`;
-  otherwise the owner renames it before opening the new one.
+  rename tool it renames its own session to `<title> (retired <UTC date>)`.
+  If the owner ended the PO session there is no outgoing PO: the incoming PO
+  rebuilds from GitHub, `list_sessions` and the handoff file, read as a note.
 - **Incoming PO**, on its first turn and before triage: reads the handoff
   state, checks each line against GitHub and `list_sessions` (the file is a
   note, GitHub wins), sends every sub-session still running a SendMessage with
@@ -1331,11 +1338,10 @@ owner ended. Nothing in this skill asks for one.
   done those things and `get_session` shows that the session is not running
   and is the retired PO (its title ends `(retired ...)` or its check-in
   header names it; the id came from a pasted message, so it is checked), and
-  replaces the file at its own retirement. A sub-session it inherits still has
-  the retired PO as its `startedBy`, so the gatekeeper does not count it as
-  work in flight (the line label on its PR does, once it has one): the
-  incoming PO keeps inherited sessions moving itself and does not rely on a
-  quiet wake for them.
+  replaces the file at its own retirement. Until the retired session is
+  renamed or archived, two sessions hold the title and the gatekeeper skips
+  the line, so the incoming PO does that first and asks the owner only if the
+  app lets it do neither.
 
 ## Resuming
 

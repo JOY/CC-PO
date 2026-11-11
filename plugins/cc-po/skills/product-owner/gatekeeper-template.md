@@ -15,8 +15,9 @@ notifications on PRs it watches, a finished background command. A timer is
 only a safety net. Each gatekeeper run is a fresh, short session on the
 cheapest model. It wakes a PO that is not running when a restart cut it off,
 when a PR of its own line is ready that the PO has not seen, or when the PO has
-been quiet for the quiet window while its line has work in flight, so no PO sits
-idle behind a ready PR or a crash, and an idle line is not woken for nothing.
+been quiet for the active window, so no PO sits idle behind a ready PR or a
+crash. A quiet PO is an anomaly to catch, and a wake inside the one-hour prompt
+cache is cheap, so the quiet wake does not wait for work in flight.
 It reads no session's context size and sends no notice that asks the owner to
 compact a session or open a new PO session: a PO's context needs no owner
 action.
@@ -48,8 +49,7 @@ those in itself.
 | `<owner>` | `owner_name`. |
 | `<language>` | `report_language`. |
 | `<model>` | `gatekeeper_model` (default `claude-haiku-5-5`). |
-| `<active minutes>` | `gatekeeper_active_minutes` (default 60): how long a sub-session is idle before the wake message lists it. |
-| `<quiet minutes>` | `gatekeeper_quiet_minutes` (default 180): how long a PO with work in flight is quiet before it is woken for that. |
+| `<active minutes>` | `gatekeeper_active_minutes` (default 60): how long a PO is quiet before it is woken for that, and how long a sub-session is idle before the wake message lists it. |
 | `<po rows>` | One row per line of the Lines table that has a PO session: `<po title> \| line:<slug> \| <check-in file>`. The title is the table's PO session title; the check-in file is the one that PO already keeps, else `po_check_in_dir` with `~` expanded, then `<repo owner>-<repo>-<slug>-po-checkin.md`, written as `<task id>` is. A line whose PO session is `none` has no row. A PO that covers more than one line (the owner folded a small line into it) lists every label of those lines in the middle cell, separated by `, `: `line:<slug>, line:<other>`. The run counts only pull requests that carry one of the labels in the PO's own row. In the Lines table, the folded line's PO column reads `none (covered by <PO title>)`. |
 | `<restart check>` | The read-only command for the machine, from "Restart check" below, written exactly. |
 
@@ -82,7 +82,7 @@ Create the task with `create_scheduled_task`:
 - `title`: `PO gatekeeper (<owner/repo>)`, which the owner sees in the app's
   task list and which names the task's runs (add a few words in `<language>`
   when that is not English);
-- `description`: `Every 30 min: wake a <owner/repo> PO that is not running after a restart, with a ready PR of its line it has not seen, or after <quiet minutes> quiet minutes with work in flight`;
+- `description`: `Every 30 min: wake a <owner/repo> PO that is not running after a restart, with a ready PR of its line it has not seen, or after <active minutes> quiet minutes`;
 - `cronExpression`: `<m>,<m+30> * * * *` (local time), where `<m>` is a minute
   from 2 to 13 (7 unless another task on this machine already uses it), so
   the run never fires on the hour or half hour, when many in-session timers
@@ -111,22 +111,22 @@ You are the gatekeeper of the Product Owner (PO) sessions of the <owner/repo> re
 The POs of this repository (title, label, check-in file):
 <po rows>
 
-Report the owner as <owner>, language <language>. Settings: idle sub-session after <active minutes> min, quiet after <quiet minutes> min.
+Report the owner as <owner>, language <language>. Settings: quiet or idle after <active minutes> min.
 
 Steps:
 1. Call `mcp__ccd_session_mgmt__list_sessions` once, with limit 200 and archived sessions left out. For each PO above, take the non-archived session whose title is exactly the PO title; a PO with none, or with two, is skipped (write that in one line). Each row normally has `isRunning`, `lastActivityAt` and `startedBy`; only if a row lacks one, call `mcp__ccd_session_mgmt__get_session` for that session only. Take the current UTC time as <now>.
 2. Skip every PO whose session is running (`isRunning` true): a real event reaches it. The rest are the candidates. If there are none, go to step 7.
 3. Restart check. Run this read-only command, which prints two UTC times and changes nothing: `<restart check>`. The first line is when the machine booted; the second is when the Claude app started (it may be empty). If the command fails, write its error in one line and treat reason (a) as false.
-4. Run one read-only query for the open pull requests: `gh pr list --repo <owner/repo> --state open --limit 200 --json number,labels,isDraft,mergeStateStatus,updatedAt`. If it fails, write its error in one line, treat reason (b) as false, the ready PR list as unknown, and judge work in flight (step 5 (c)) from the sessions alone.
+4. Run one read-only query for the open pull requests that are not drafts: `gh pr list --repo <owner/repo> --state open --search "draft:false" --limit 200 --json number,labels,mergeStateStatus,updatedAt`. If it fails, write its error in one line, treat reason (b) as false and the ready PR list as unknown.
 5. For each candidate PO, in the order listed, wake it when ANY of these holds, and name every one that holds in the message:
    (a) restart: the boot time or the app start time is LATER than the PO's `lastActivityAt`.
-   (b) unseen ready PR: an open pull request that is not a draft (`isDraft` false) and carries one of the PO's own line labels (the labels in its row; a pull request of any other line never counts, whoever's it is) has `mergeStateStatus` CLEAN or UNSTABLE and an `updatedAt` LATER than the PO's `lastActivityAt`, so the PO has not acted since it became ready. There is no waiting time.
-   (c) quiet: the PO's `lastActivityAt` is <quiet minutes> minutes or more before <now>, AND its line has work in flight: an open pull request (a draft counts) that carries one of the PO's line labels, or a non-archived session whose `startedBy` is the PO's session id (a session that a retired PO started is not counted until it has an open PR with the line's label). A line with no work in flight is not woken for being quiet. This wakes a PO at most once per quiet window while its line is busy and the PO is idle. A crash or restart is reason (a), not this one.
+   (b) unseen ready PR: an open pull request that carries one of the PO's own line labels (the labels in its row; a pull request of any other line never counts, whoever's it is) has `mergeStateStatus` CLEAN or UNSTABLE and an `updatedAt` LATER than the PO's `lastActivityAt`, so the PO has not acted since it became ready. There is no waiting time.
+   (c) quiet: the PO's `lastActivityAt` is <active minutes> minutes or more before <now>, whether or not its line has work in flight (a PO that is quiet for that long is unusual, and a wake costs little inside the prompt cache). This wakes every PO after a crash or restart, and at most once per active window while a PO is idle.
    If none holds, do not wake it.
 6. Send. For each PO you wake, send ONE message with `mcp__ccd_session_mgmt__send_message` to its session id; if that is refused, call `SendMessage` with `to` set to that session id and the same text. If both fail, write the error in one line; the next run tries again.
    Wake text, with the values filled in:
    "Gatekeeper wake at <now> (reasons: <reasons>). Ready PRs of your line: <ready PRs>. Idle sub-sessions of your line: <idle sub-sessions>. Do one short turn: merge or review the ready PRs, feed or archive the idle sub-sessions, resume work a crash cut off, answer messages. Then end the turn. Keep no CronCreate check-in and no ScheduleWakeup loop: the gatekeeper and real events wake you. Your check-in file is <check-in file>; use the one you already keep if it differs. Read only what this needs."
-   <reasons> names every reason that holds: "restart", "unseen ready PR", "quiet for <N> minutes with work in flight".
+   <reasons> names every reason that holds: "restart", "unseen ready PR", "quiet for <N> minutes".
    <ready PRs> is the numbers of the line's open, non-draft PRs whose `mergeStateStatus` is CLEAN or UNSTABLE (the same label rule as (b)), each with its state, or "none"; say "unknown, the gh query failed" when step 4 failed.
    <idle sub-sessions> is the non-archived sessions whose `startedBy` is this PO's session id, that are not running and have had no activity for more than <active minutes> minutes, each with its title and how long it has been idle, or "none".
    When reason (a) holds add: "Machine boot <boot time>, app start <app start time>. A restart stopped your process and your sub-sessions. Tell <owner> in <language> on the first line that you are back and how long you were away, recreate any one-shot you had pending, and resume every linked sub-session (list_sessions linked) that had pending work."
