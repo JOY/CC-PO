@@ -1066,7 +1066,7 @@ test('the PR monitor, per-task model and effort and sidebar groups are documente
   // The PO only reads another session's PR.
   assert.match(skill, /the PO passes the id \(from `list_sessions`\) of a sub-session whose PR is waiting to `get_status` at its check-ins/);
   // The brief's Process bullet names bind or auto_fix only for the full note.
-  assert.match(skill, /named as `bind` or `auto_fix` only when its note names the owner \(or a decision id\), gives a date and says the sessions run in auto or bypass mode, and otherwise named as `status`/);
+  assert.match(skill, /named as `bind` or `auto_fix` only when its note names the owner \(the word `owner`, the `owner_name` value or a decision id\), gives a date and says the sessions run in auto or bypass mode, and otherwise named as `status`/);
   // A session blocked on a prompt: neither waiting bullet applies, the owner is told once, and the PO records it.
   assert.match(skill, /this overrides, for these two tools, both the bullet on a session waiting on the user and the bullet on actions a sub-session's permission checks refused or prompted for/);
   assert.match(skill, /denying the prompt in the app lets it continue on `status`, and records `reported` for it in the check-in file/);
@@ -1158,4 +1158,16 @@ test('the owner_name value counts as naming the owner in a pr_monitor or sidebar
     assert.match(r.warnings.join('\n'), /pr_monitor auto_fix needs a note naming the owner/, v);
   }
   assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /names the owner \(the word `owner`, the `owner_name` value, or a `decision_log` id\)/);
+  // The runtime rule in SKILL.md accepts the same three ways of naming the owner as the checker.
+  assert.match(flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n')), /attribution \(the word `owner`, the config's `owner_name` value or a `decision_log` id\), a date and the statement/);
+  // Unicode whole words and one-character names.
+  const unicode = (name, v) => checkConfig(minimal.replace('- owner_name: Sam', `- owner_name: ${name}`).replace('- project_id: PVT_example', `- project_id: PVT_example\n- pr_monitor: ${v}`));
+  const naming = /pr_monitor auto_fix needs a note naming the owner/;
+  assert.deepEqual(unicode('李明', 'auto_fix (李明, 2026-11-12, sessions in auto mode)').warnings, []);
+  assert.match(unicode('李明', 'auto_fix (李明华, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
+  assert.deepEqual(unicode('Q', 'auto_fix (Q, 2026-11-12, sessions in auto mode)').warnings, []);
+  assert.match(unicode('Q', 'auto_fix (Quinn, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
+  // An owner_name with regex characters is matched literally.
+  assert.deepEqual(unicode('J.O. (Joy)', 'auto_fix (J.O. (Joy), 2026-11-12, sessions in auto mode)').warnings, []);
+  assert.match(unicode('J.O.', 'auto_fix (JxOx, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
 });

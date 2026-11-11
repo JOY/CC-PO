@@ -318,8 +318,10 @@ export function checkConfig(text, { root } = {}) {
   // value itself (the config's required key), as a whole word.
   const unquote = (v) => v.replace(/^`([^`]*)`/, '$1');
   const ownerName = values.owner_name === undefined ? '' : unquote(values.owner_name).trim();
-  const ownerNameRe = ownerName.length >= 2
-    ? new RegExp(`(?<![\\w])${ownerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w])`, 'i')
+  // Whole word in any script: the boundaries are Unicode letters, digits and
+  // the underscore, so "李明" does not match inside "李明华".
+  const ownerNameRe = ownerName.length >= 1
+    ? new RegExp(`(?<![\\p{L}\\p{N}_])${ownerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'iu')
     : null;
   const attributed = (note) => ((/\bowner\b|\bD-\d+\b/i.test(note) || (ownerNameRe !== null && ownerNameRe.test(note)))
     && /(?<!\d)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)/.test(note) && /\b(?:auto|bypass)\b/i.test(note));

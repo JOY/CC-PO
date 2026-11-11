@@ -1069,8 +1069,9 @@ session gets, so it carries:
   `integration_branch` (a draft first when `draft_pr_first` is yes), then the
   PR monitor step of "Coordinating" with the `pr_monitor` mode the brief
   names (the config's value, named as `bind` or `auto_fix` only when its note
-  names the owner (or a decision id), gives a date and says the sessions run
-  in auto or bypass mode, and otherwise named as `status`); the review gate: the `local_reviews`, run by the agent with their CLI form
+  names the owner (the word `owner`, the `owner_name` value or a decision id),
+  gives a date and says the sessions run in auto or bypass mode, and otherwise
+  named as `status`); the review gate: the `local_reviews`, run by the agent with their CLI form
   (a Codex review at the level the brief names, as above),
   in the background when a review takes minutes (a slash command such as a
   review plugin's is typed by a person; an agent cannot invoke it), naming the tool-unavailable path for any reviewer that
@@ -1154,7 +1155,8 @@ session gets, so it carries:
   - `bind` and `auto_fix` use tools that ask the owner to approve in the app's
     default permission mode, and a session cannot work past a pending prompt,
     so they count only when the config value's note carries the owner's
-    attribution (the word `owner` or a `decision_log` id), a date and the
+    attribution (the word `owner`, the config's `owner_name` value or a
+    `decision_log` id), a date and the
     statement that the sub-sessions run in auto or bypass mode, as in
     `auto_fix (owner, 2026-11-12, sessions in auto mode)`. Anything less is
     run as `status`, and the brief says so. The PO never writes such a note
