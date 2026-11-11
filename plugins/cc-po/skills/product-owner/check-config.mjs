@@ -319,9 +319,9 @@ export function checkConfig(text, { root } = {}) {
   const unquote = (v) => v.replace(/^`([^`]*)`/, '$1');
   const ownerName = values.owner_name === undefined ? '' : unquote(values.owner_name).trim();
   // Whole word in any script: the boundaries are Unicode letters, digits and
-  // the underscore, so "李明" does not match inside "李明华".
+  // the underscore (and combining marks), so "李明" does not match inside "李明华".
   const ownerNameRe = ownerName.length >= 1
-    ? new RegExp(`(?<![\\p{L}\\p{N}_])${ownerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'iu')
+    ? new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])${ownerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{M}\\p{N}_])`, 'iu')
     : null;
   const attributed = (note) => ((/\bowner\b|\bD-\d+\b/i.test(note) || (ownerNameRe !== null && ownerNameRe.test(note)))
     && /(?<!\d)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)/.test(note) && /\b(?:auto|bypass)\b/i.test(note));

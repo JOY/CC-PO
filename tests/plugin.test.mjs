@@ -1167,6 +1167,9 @@ test('the owner_name value counts as naming the owner in a pr_monitor or sidebar
   assert.match(unicode('李明', 'auto_fix (李明华, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
   assert.deepEqual(unicode('Q', 'auto_fix (Q, 2026-11-12, sessions in auto mode)').warnings, []);
   assert.match(unicode('Q', 'auto_fix (Quinn, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
+  // Combining marks are part of a name: a vowel sign after the configured name makes a different name.
+  assert.deepEqual(unicode('अनिल', 'auto_fix (अनिल, 2026-11-12, sessions in auto mode)').warnings, []);
+  assert.match(unicode('अनिल', 'auto_fix (अनिला, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
   // An owner_name with regex characters is matched literally.
   assert.deepEqual(unicode('J.O. (Joy)', 'auto_fix (J.O. (Joy), 2026-11-12, sessions in auto mode)').warnings, []);
   assert.match(unicode('J.O.', 'auto_fix (JxOx, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
