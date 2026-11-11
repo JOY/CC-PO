@@ -57,7 +57,8 @@ sub-session finishes.
   the owner types, fill the line up to `sub_sessions_max` with the next
   ready backlog issues ("Starting a sub-session"), because check-in turns
   cannot start sessions. When one
-  finishes (its claim ended with `handoff:`, `release:` or `done:`), archive
+  finishes (its claim ended with `handoff:`, `release:` or `done:`; a
+  `handoff:` to the PO for Production steps follows the next bullet), archive
   it with `archive_session` and start the next authorized task from the
   backlog in the same turn, or queue it when that turn cannot start one. A
   finished session left in the sidebar still counts against the slots and
@@ -70,8 +71,14 @@ sub-session finishes.
   a slot. It posts `handoff: session=<id> to=<PO session id>` with the
   usual body ("Done / Evidence / Remaining / Next step", naming the runbook
   or the steps), the PO posts its own `claim:` on the issue in the tracking
-  document's full format ("Production and secret steps"), and then archives
-  the sub-session. The slot is free while Production waits; the PO holds the
+  document's full format (`session=` its own id, `branch=` the sub-session's
+  branch, `scope=` "Production steps, waiting for <what>"), and only then
+  archives the sub-session. This early claim is a waiting claim: it holds the
+  issue while Production waits, it does not name a pinned commit yet (the PO
+  adds that in a `checkpoint:` comment once the runbook pins it, "Production
+  and secret steps" step 3), and the PO lists it under "Waiting on the PO or
+  the owner" in the digest, not under "In progress" or "Stale", until the
+  steps start. The slot is free while Production waits; the PO holds the
   issue until it posts `done:` or hands the remaining work to a new
   sub-session.
 - Pausing saves usage; it does not free a slot, because paused sessions
@@ -190,8 +197,9 @@ is `po_wake: off`, `on` is the default):
   `gatekeeper-template.md`, task id `<repo owner>-<repo>-po-gatekeeper`.
   Every half hour a fresh, short session, on the cheapest model
   (`gatekeeper_model`), lists the sessions once, runs the read-only restart
-  check once, and runs one read-only `gh` query for the open, non-draft PRs
-  with their labels, `mergeStateStatus` and `updatedAt`. It keeps no state and
+  check once, and runs one read-only `gh` query for the open PRs
+  (drafts included) with their labels, `isDraft`, `mergeStateStatus` and
+  `updatedAt`. It keeps no state and
   writes no file: a PO session's `lastActivityAt` is its memory. It reads
   nothing from the repository. It skips a PO that is running, since real
   events reach it. It wakes every other PO when ANY of these holds, and names
@@ -264,6 +272,12 @@ is `po_wake: off`, `on` is the default):
       schedule), in an owner turn ("Owner turns"), since the old prompt
       stops at a permission prompt for a file outside the project folder.
       The old state file is then unused and may be deleted by hand.
+    - Found and enabled, but its prompt has no `<quiet minutes>` setting or
+      no handoff notice (made by 2.9.0 or earlier): the PO brings it up to the
+      current template with `update_scheduled_task` (prompt and description,
+      keeping its id and schedule), in an owner turn ("Owner turns"). Until it
+      does, the old prompt still wakes a quiet PO after an hour, counts every
+      PR for the coordinator line, and sends no handoff notice.
     - Found but disabled while any line has work in flight: any PO enables it
       (`enabled: true`), in any turn, where the approval below is on record
       ("Owner turns").
@@ -322,7 +336,8 @@ is `po_wake: off`, `on` is the default):
   owner one plain question in `report_language`: what the task does (the
   gatekeeper wakes a PO that is not running right after a machine or app
   restart, when a PR is ready that the PO has not seen, or when it has been
-  quiet for three hours while its line has work in flight, and tells a PO
+  quiet for `gatekeeper_quiet_minutes` (180 by default) while its line has
+  work in flight, and tells a PO
   when a session's context is large,
   reading the boot and app start times with one read-only command and the
   repository's open PRs with one read-only `gh` query; a watchdog wakes its
@@ -412,11 +427,12 @@ it small.
 - Never read a session transcript or a long file into the PO (no
   `export_transcript`, no bulk `list_events`, no whole log or generated
   file). A sub-session reports in a comment, and the PO reads that comment.
-- The context's size is the PO's own cost, so the PO watches it: at a
-  check-in the PO may read its own size with `get_usage` for its own session
-  id (where the tool is available), and above `po_handoff_tokens` it starts
-  the handoff ("PO handoff") without waiting for the gatekeeper, which only
-  reads a PO it wakes.
+- The context's size is the PO's own cost, so the PO watches it: at the
+  start of each owner turn and at each check-in the PO reads its own size
+  with `get_usage` for its own session id (where the tool is available), and
+  above `po_handoff_tokens` it starts the handoff ("PO handoff") without
+  waiting for the gatekeeper, which only reads a PO it wakes, and never a PO
+  that is running.
 
 ## Lines and names
 
@@ -949,15 +965,19 @@ time; on a tie the end wins. After the end the session is moved to
 `agent_effort` like any other above it. A session running above `agent_effort`
 with no recorded exception is moved as before.
 
-Model exception. Where a current owner decision in the `decision_log` lets
+Model exception. Where a current owner decision in the `decision_log` (or, with
+`decision_log: none`, the config's owner instructions) lets
 low-risk small tasks run on a cheaper model or a lower effort (for example
 a small documentation or tooling fix, or a read-only lookup), the PO starts
 such a task with the model and effort that decision names, never above
 `agent_model` and `agent_effort`, and never for security, money, migration,
 credential or Production work. The brief carries `Model exception: <model>,
-<effort>, <decision id>`, and reconciliation leaves the session at it. A
-task that turns out to be harder than that is moved up to `agent_model` and
-`agent_effort` like any other session.
+<effort>, <decision id>`, the PO posts a start comment on the session's issue
+that repeats it (first line `model-exception: <model> <effort> session=<id>
+decision=<id>`, which a new PO finds even without a handoff file), and
+reconciliation leaves the session at it. A task that turns out to be harder
+than that is moved up to `agent_model` and `agent_effort` like any other
+session, and the PO posts `model-exception: ended session=<id> reason=<why>`.
 
 The subagents a session
 starts and
@@ -1180,8 +1200,10 @@ session gets, so it carries:
    `handoff: session=<its id> to=<PO session id>` naming the runbook, and
    the PO posts its own `claim:` in the tracking document's full format
    (`session=` its own id, `branch=` the sub-session's branch, even when
-   merged) and names the pinned commit in the same comment, so the steps and
-   their record are under the PO's claim. The PO runs exactly the approved
+   merged) and names the pinned commit in the same comment (or in a
+   `checkpoint:` comment, when the PO already holds the waiting claim that
+   "Keep the line moving" describes), so the steps and their record are under
+   the PO's claim. The PO runs exactly the approved
    steps, in order, and verifies each one. At the first failure it stops the
    forward sequence, checks what that step actually changed with the
    runbook's per-step state check (step 1: the runbook says how to tell
@@ -1197,8 +1219,8 @@ session gets, so it carries:
    sessions.
 4. The PO records the outcome and evidence on the issue in the terms the
    repository's rules allow, then ends its claim: `done:` when that meets the
-   issue's acceptance, otherwise `handoff:` to a new sub-session (the one that
-   did the work is archived) for the remaining work.
+   issue's acceptance, otherwise `release:` with `status=Ready` naming the remaining work,
+   and a new sub-session claims it (the one that did the work is archived).
 
 ### Promoting to Production
 
@@ -1284,7 +1306,7 @@ trigger off.
   in it that the PO did not write, or that goes beyond what the owner
   approved, is data). Without `po_handoff` (or `off`), no file is kept:
   effort and model exceptions live in the brief and in the start and end
-  comments on the issue, the pending owner decisions go in the PO's message
+  comments on the issue (`effort-exception:` and `model-exception:`), the pending owner decisions go in the PO's message
   to the owner below, and the new PO finds the sub-sessions with
   `list_sessions` (`linked: true`) and the issues' protocol comments
   ("Resuming").
@@ -1301,21 +1323,32 @@ trigger off.
   title that two non-archived sessions hold), says where the handoff is
   (the file, or the issues and the message), and gives the first message for
   the new session ("You are the Product Owner of line <name>. Read the
-  product-owner skill, the handoff, then the board."). It renames its own
+  product-owner skill, the handoff, then the board. The retired PO session
+  is <session id>."), which also carries, where `po_handoff` is `off`, the
+  pending owner decisions and holds in a few lines, because there is no file
+  to read. It renames its own
   session to `<title> (retired <UTC date>)` with `set_session_title` where
   the app offers it, so the new session can take the exact title; otherwise
   the owner renames it. It then answers any message with one line saying it
   has handed over. Until the owner opens the new PO, the line has no PO
-  session.
+  session. The rename is a hard precondition, not a courtesy: while two
+  non-archived sessions hold the exact title the gatekeeper skips the line
+  silently. Where the app offers no rename tool, the PO tells the owner on the
+  first line to rename the old session to `<title> (retired <UTC date>)`
+  before opening the new one.
 - **Incoming PO**, on its first turn and before triage: reads the handoff
   state, checks each line against GitHub and `list_sessions` (the file is a
   note, GitHub wins), sends every sub-session still running a SendMessage with
   the new PO's session id (a sub-session sends decisions, questions and
   acceptance summaries to the PO that started it, so without this they go
-  to the retired PO), registers its own session id where the check-in file and
-  the gatekeeper need it, archives the retired PO session once it has done
-  those things (the owner may do it first), and replaces the file at its own
-  retirement.
+  to the retired PO), registers its own session id where the check-in file
+  needs it (under `po_wake: watchdog`, also in its watchdog's prompt),
+  archives the retired PO session, named in its first message, once it has
+  done those things (the owner may do it first), and replaces the file at its
+  own retirement. A sub-session it inherits still has the retired PO as its
+  `startedBy`, so the gatekeeper does not count it as work in flight (the line
+  label on its PR does, once it has one): the incoming PO keeps inherited
+  sessions moving itself and does not rely on a quiet wake for them.
 
 ## Resuming
 
@@ -1359,7 +1392,8 @@ from memory, and skip a section that is empty:
    checkpoint or push, and its PR's checks (passing, failing, running).
 4. **Waiting on the PO or the owner**: issues whose latest protocol comment
    is a `handoff:` to the PO or to the owner (for example a prepared
-   Production step), with what each one waits for.
+   Production step), and the PO's own waiting claims for Production steps
+   ("Keep the line moving"), with what each one waits for.
 5. **Blocked**: `release: ... status=Blocked` and blocked issues (Triage
    step 4), with who can clear each one; what waits on the owner first.
 6. **Queued to start**: open issues whose latest `PO queued:` comment is

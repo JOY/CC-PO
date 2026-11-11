@@ -590,7 +590,7 @@ test('the gatekeeper wakes a PO that is not running when any of three reasons ho
   assert.doesNotMatch(flat, /coordinator/);
   // Only the PO's own line counts, and the quiet reason needs work in flight.
   assert.match(flat, /a pull request of any other line never counts/);
-  assert.match(flat, /\(c\) quiet: the PO's `lastActivityAt` is <quiet minutes> minutes or more before <now>, AND its line has work in flight: an open pull request \(a draft counts\) that carries one of the PO's line labels, or a non-archived session whose `startedBy` is the PO's session id\. A line with no work in flight is not woken for being quiet/);
+  assert.match(flat, /\(c\) quiet: the PO's `lastActivityAt` is <quiet minutes> minutes or more before <now>, AND its line has work in flight: an open pull request \(a draft counts\) that carries one of the PO's line labels, or a non-archived session whose `startedBy` is the PO's session id \(a session that a retired PO started is not counted until it has an open PR with the line's label\)\. A line with no work in flight is not woken for being quiet/);
   const at = (s) => flat.indexOf(s);
   assert.ok(at('(a) restart') < at('(b) unseen ready PR') && at('(b) unseen ready PR') < at('(c) quiet'));
   assert.match(flat, /whose title is exactly the PO title/);
@@ -890,7 +890,7 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
     assert.match(sent[0].msg, /Do one short turn: merge or review the ready PRs, feed or archive the idle sub-sessions, resume work a crash cut off, answer messages\. Then end the turn\./);
     assert.match(sent[0].msg, /Machine boot 2026-11-06T01:00:00Z, app start 2026-11-06T01:05:00Z/);
     assert.match(sent[0].msg, /Handoff notice at 2026-11-06T05:00:00Z: your own context is 522000 tokens, above the 250000 limit\. Hand your line to a fresh PO session now/);
-    assert.match(sent[0].msg, /with the exact title Ludy Engage Product Owner, and rename this session to 'Ludy Engage Product Owner \(retired 2026-11-06\)'/);
+    assert.match(sent[0].msg, /with the exact title Ludy Engage Product Owner, and the old session should be renamed 'Ludy Engage Product Owner \(retired 2026-11-06\)' before the new one opens/);
     // The PO itself is never in a compaction notice.
     assert.doesNotMatch(sent[0].msg, /Context notice at .*Ludy Engage Product Owner \(/);
     // No state file is written.
@@ -1005,10 +1005,18 @@ test('the PO hands over by context size, keeps its context lean, archives finish
   // Archiving and Production-waiting sessions.
   assert.match(skill, /archive it with `archive_session`/);
   assert.match(skill, /the owner's "always allow" covers the rest/);
-  assert.match(skill, /the PO posts its own `claim:` on the issue .* and then archives the sub-session\. The slot is free while Production waits/);
+  assert.match(skill, /the PO posts its own `claim:` on the issue .* and only then\s+archives the sub-session\. This early claim is a waiting claim.*The slot is free while Production waits/);
   assert.doesNotMatch(skill, /that sub-session stays \(idle, still counted\)/);
   // Fewer, cheaper tasks.
   assert.match(skill, /one checklist on one cleanup issue per line per week/);
+  // Review follow-ups: the upgrade path, the title precondition, the retired session and a durable model record.
+  assert.match(skill, /Found and enabled, but its prompt has no `<quiet minutes>` setting or no handoff notice \(made by 2\.9\.0 or earlier\)/);
+  assert.match(skill, /The rename is a hard precondition, not a courtesy/);
+  assert.match(skill, /The retired PO session is <session id>\./);
+  assert.match(skill, /a `handoff:` to the PO for Production steps follows the next bullet/);
+  assert.match(skill, /`model-exception: <model> <effort> session=<id> decision=<id>`/);
+  assert.match(skill, /at the start of each owner turn and at each check-in the PO reads its own size with `get_usage`/);
+  assert.match(skill, /the PO's own waiting claims for Production steps/);
   assert.match(skill, /`Model exception: <model>, <effort>, <decision id>`/);
   assert.match(skill, /never above `agent_model` and `agent_effort`, and never for security, money, migration, credential or Production work/);
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
