@@ -581,6 +581,15 @@ were relied on; where a tool is absent (Antigravity) the keys are ignored.
   notice and reads no context size; the app's automatic compaction handles a
   PO's context and no owner action is ever needed.
 
+### Upgrading to 2.12.1
+
+No config change. The checker now accepts the owner's own name in the note of
+`pr_monitor: bind` / `auto_fix` and `sidebar_groups: on` (the `owner_name`
+value as a whole word, besides the word `owner` or a decision id), so a note
+such as `auto_fix (Sam, 2026-11-12, sessions in auto mode)` no longer warns
+when `owner_name` is `Sam`. Copy the checker and schema into a repository that
+vendors them.
+
 ## License
 
 [MIT](LICENSE)
