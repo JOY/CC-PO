@@ -923,13 +923,43 @@ wrap-up box, and never a suggested-session card by choice.
   a dispatch before starting that dispatch directly, so it never starts
   twice.
 
+Sidebar group (desktop app, `sidebar_groups: on` in the config, default
+`off`). The PO keeps one custom sidebar group per line, named exactly as the
+line is in the Lines table, and files each sub-session it starts into it, so
+a line's work reads as one list. Before the first start of a line the PO calls
+`list_groups` and creates the group with `create_group` only when no group of
+that name exists (never a near-duplicate; it never renames or deletes a group
+it did not create). Right after each start it calls `move_sessions` with the
+new session's id and the group id. In the app's default permission mode a
+move of another session asks the owner to approve, in auto or bypass mode it
+does not, so the owner turns this on knowing that. A refused, unanswered or
+failed call is dropped without comment and never delays a start; the PO
+retries it once at its next check-in. The PO's own session is not moved.
+Where the sidebar tools are absent (Antigravity), the key does nothing.
+
 Give each sub-session its own issue and files. Each sub-session decides for
 itself whether to use in-process subagents (for example parallel research or
 the fresh-context review a gate requires); the PO does not require or
 forbid them, and they work under that session's claim.
 
 Use `start_session` with a fresh context, its own worktree, `model:
-<agent_model>` and `effort: <agent_effort>`; a setting the config leaves
+<agent_model>` and `effort: <agent_effort>` on every start, chosen per task
+(the app's default is to inherit the PO's own model and effort, so a PO on a
+costlier model would otherwise start every task on it, and a later change of
+the PO's setting would silently change tasks already described). Quality and
+delivery speed come first and token savings second: a task that changes code,
+documentation, pricing or configuration always gets `agent_model` at
+`agent_effort`; only a read-only lookup or search may get a cheaper setting,
+under the "Model exception" below. The app takes a model of the same family
+or cheaper than the PO's and an effort at or below the PO's own, and ignores
+anything higher, so after each start the PO checks the new session's model
+(`get_session` with the `session_id` the start result reports) and, when the
+app capped it, sets it with `set_session_model`; an effort above the PO's own
+is set with `set_session_effort`, whose result names the level that applies.
+The app asks the owner to approve a raise above the PO's own; if that is not
+approved, the session stays as started and the PO notes the shortfall in the
+issue comment instead of waiting. A
+setting the config leaves
 out, or sets to `none`, is left out of the call (`none` is the same as an
 absent key), so the session inherits the PO's. A sub-session already running
 on another model or effort (started before the setting changed) is moved
@@ -1017,8 +1047,9 @@ session gets, so it carries:
   the files the task touches).
 - **Process**: claim with `task-claim` before editing; create and fill any
   new issue per the table above; a PR with `Refs #<n>` into
-  `integration_branch` (a draft first when `draft_pr_first` is yes); the
-  review gate: the `local_reviews`, run by the agent with their CLI form
+  `integration_branch` (a draft first when `draft_pr_first` is yes), then the
+  PR monitor step of "Coordinating" with the config's `pr_monitor` mode (say
+  which mode in the brief); the review gate: the `local_reviews`, run by the agent with their CLI form
   (a Codex review at the level the brief names, as above),
   in the background when a review takes minutes (a slash command such as a
   review plugin's is typed by a person; an agent cannot invoke it), naming the tool-unavailable path for any reviewer that
@@ -1083,9 +1114,30 @@ session gets, so it carries:
   for it (`gh` watch loops, Monitor, scheduled CI checks). A sub-session
   checks its PR's CI once each time it resumes. The PO's check-ins look at
   every PR that is waiting and send its session a one-line nudge once the
-  required checks finish. With the owner's OK, the PR bar's Auto-fix monitor
-  can also watch a sub-session's PR; it wakes that session on failures,
-  conflicts and review comments, not on success.
+  required checks finish.
+- PR monitor (the desktop app's `ccd_pr` tools, `pr_monitor` in the config:
+  `bind` by default, `auto_fix`, or `off`; where the tools are absent, as on
+  Antigravity, none of this applies and the paragraph above stands). Right
+  after a sub-session opens its PR it calls `get_status`; when the app does
+  not report that PR (a fork, another host, a PR opened by a command the app
+  did not see) it calls `bind_pr` with the PR's URL, so the app's PR bar
+  tracks it. From then on it reads the PR's CI, mergeability and review state
+  with `get_status`, served from the app's cache, instead of `gh pr checks`.
+  The PO does the same for any sub-session's PR at its check-ins by passing
+  that session's id (from `list_sessions`) to `get_status`. With
+  `pr_monitor: auto_fix` the sub-session also calls `set_monitor` with
+  `auto_fix: true` and the PR's URL for the PR it opened, which the owner's
+  standing choice of that value in the config asks for: the app then wakes
+  the session on CI failures, merge conflicts and review comments, so it need
+  not re-check in extra turns. Auto-fix does not wake on success, so the PO's
+  nudge above stays. The app asks the owner to approve `bind_pr` and
+  `set_monitor` unless the session runs in auto or bypass mode. A refused or
+  unanswered call is never waited on: the sub-session carries on with
+  `get_status` on each resume and says so in its report, and it never asks the
+  owner for it. Never set `auto_merge` (the PO's acceptance gate and the
+  sub-session's `--match-head-commit` merge stay the only way in) and never
+  set `auto_archive_on_close` (the PO archives a session after its `done:`
+  comment, because the merge is not the end of a runtime task).
 - Take to the owner only material product, risk or Production decisions and
   human-only steps (sign-ins, console deletions). Say what, why, the risk,
   your recommendation and the choices, then relay the answer word for word

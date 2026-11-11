@@ -531,6 +531,40 @@ notes.
   gatekeeper task still sends, and rewrites any step of its check-in file that
   asks for a context-size handoff, until a PO updates the gatekeeper task.
 
+### Upgrading to 2.12.0
+
+Config edit (optional; both keys default to the earlier behaviour or a safe
+one): add `pr_monitor` (`bind` by default, `auto_fix` or `off`) and
+`sidebar_groups` (`on` or `off`, default `off`) under Sessions. Nothing else
+changes: the gatekeeper task prompt is unchanged since 2.11.0, so no PO needs
+to update it. This repository has no separate changelog file: these notes are
+the release notes. The desktop-app features below were checked against the
+app's own tool definitions and the Claude Code Desktop documentation before
+they were relied on; where a tool is absent (Antigravity) the key is ignored.
+
+- PR monitor (`pr_monitor`): right after a sub-session opens its PR it calls
+  `get_status`, binds the PR with `bind_pr` when the app did not pick it up,
+  and reads CI and review state from the app's cache instead of `gh pr
+  checks`; the PO does the same per sub-session at its check-ins. With
+  `auto_fix` the sub-session also turns on the app's Auto-fix monitor for the
+  PR it opened (the app wakes it on CI failures, conflicts and review
+  comments; the app may ask the owner to approve the call, and a refused or
+  unanswered call is never waited on). Sessions never set auto-merge or
+  auto-archive-on-close.
+- Per-task model and effort: the PO passes `model` and `effort` on every
+  `start_session`, per task, instead of inheriting its own (the app's default).
+  A task that changes anything stays on `agent_model` at `agent_effort`; only
+  a read-only lookup may run cheaper, as in 2.11.0. The app caps a model above
+  the PO's family and an effort above the PO's own, so the PO checks the new
+  session and corrects it, and notes any shortfall instead of waiting.
+- Sidebar groups (`sidebar_groups: on`): the PO keeps one custom sidebar group
+  per line, named as in the Lines table, and files each sub-session it starts
+  into it. In the app's default permission mode each move asks the owner to
+  approve, which is why the key is off by default.
+- Already in 2.11.0, unchanged here: the gatekeeper sends no compaction
+  notice and reads no context size; the app's automatic compaction handles a
+  PO's context and no owner action is ever needed.
+
 ## License
 
 [MIT](LICENSE)

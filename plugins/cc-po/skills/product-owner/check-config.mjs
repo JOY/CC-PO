@@ -28,6 +28,7 @@ export const KNOWN = new Set([
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
   'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
+  'pr_monitor', 'sidebar_groups',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -306,6 +307,14 @@ export function checkConfig(text, { root } = {}) {
   }
   if (values.po_handoff !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_handoff)) {
     errors.push('po_handoff must be on or off');
+  }
+  // pr_monitor and sidebar_groups drive the desktop app's PR monitor and
+  // sidebar tools (2.12.0); a note may follow the value.
+  if (values.pr_monitor !== undefined && !/^(off|bind|auto_fix)(?![\w-])/i.test(values.pr_monitor)) {
+    errors.push('pr_monitor must be off, bind or auto_fix');
+  }
+  if (values.sidebar_groups !== undefined && !/^(on|off)(?![\w-])/i.test(values.sidebar_groups)) {
+    errors.push('sidebar_groups must be on or off');
   }
   // The PO passes an effort to start_session, which takes one of a fixed set
   // of levels, so another value would fail every dispatch; a note may follow

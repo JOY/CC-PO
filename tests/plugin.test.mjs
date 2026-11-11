@@ -723,8 +723,8 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.11.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.11.0');
+test('the version is 2.12.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.12.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -732,6 +732,7 @@ test('the version is 2.11.0 and the README describes the gatekeeper and Antigrav
   assert.match(readme, /### Upgrading to 2\.9\.0/);
   assert.match(readme, /### Upgrading to 2\.10\.0/);
   assert.match(readme, /### Upgrading to 2\.11\.0/);
+  assert.match(readme, /### Upgrading to 2\.12\.0/);
   assert.match(readme, /The Claude app gatekeeper keeps no state file/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
@@ -1032,4 +1033,51 @@ test('the PO is one long-lived session, keeps its context lean, archives finishe
   assert.doesNotMatch(rules, /quietMinutes|gatekeeper_quiet_minutes/);
   assert.doesNotMatch(rules, /handoffTokens|compactTokens/);
   assert.doesNotMatch(rules, /coordinatorLabel/);
+});
+
+// 2.12.0: the desktop app's PR monitor, a model and effort on every start, and sidebar groups (#7145 in DOS/DOS.AI).
+test('the PR monitor, per-task model and effort and sidebar groups are documented, bounded and checked', () => {
+  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
+  const rules = read('plugins/cc-po/rules/AGENTS.md');
+  // PR monitor: get_status first, bind_pr only when the app missed the PR, set_monitor only under auto_fix.
+  assert.match(skill, /PR monitor \(the desktop app's `ccd_pr` tools, `pr_monitor` in the config: `bind` by default, `auto_fix`, or `off`/);
+  assert.match(skill, /calls `get_status`; when the app does not report that PR .* it calls `bind_pr` with the PR's URL/);
+  assert.match(skill, /With `pr_monitor: auto_fix` the sub-session also calls `set_monitor` with `auto_fix: true`/);
+  assert.match(skill, /Auto-fix does not wake on success, so the PO's nudge above stays/);
+  assert.match(skill, /A refused or unanswered call is never waited on/);
+  // Sessions never enable auto-merge or auto-archive on close.
+  assert.match(skill, /Never set `auto_merge` .* never set `auto_archive_on_close`/);
+  // The PO reads another session's PR with get_status.
+  assert.match(skill, /passing that session's id \(from `list_sessions`\) to `get_status`/);
+  // Model and effort are passed on every start, per task, quality first, and a capped start is corrected.
+  assert.match(skill, /`effort: <agent_effort>` on every start, chosen per task/);
+  assert.match(skill, /a task that changes code, documentation, pricing or configuration always gets `agent_model` at `agent_effort`/);
+  assert.match(skill, /ignores anything higher, so after each start the PO checks the new session's model/);
+  assert.match(skill, /if that is not approved, the session stays as started and the PO notes the shortfall in the issue comment instead of waiting/);
+  // Sidebar groups: off by default, one group per line, never a near-duplicate, never delays a start.
+  assert.match(skill, /Sidebar group \(desktop app, `sidebar_groups: on` in the config, default `off`\)/);
+  assert.match(skill, /creates the group with `create_group` only when no group of that name exists/);
+  assert.match(skill, /never delays a start/);
+  // Schema, sample and the Antigravity rules.
+  assert.match(schema, /\| `pr_monitor` \| `bind` \|/);
+  assert.match(schema, /\| `sidebar_groups` \| `off` \|/);
+  assert.match(read('plugins/cc-po/skills/setup/sample-config.md'), /- pr_monitor: bind\n- sidebar_groups: off/);
+  assert.match(rules, /`bind_pr`, `get_status`, `set_monitor` \(`pr_monitor`\), `create_group`, `move_sessions` \(`sidebar_groups`\) \| Antigravity has no PR bar/);
+  // The gatekeeper stays free of context notices (item 4 was done in 2.11.0 and is unchanged).
+  const template = flatten(read('plugins/cc-po/skills/product-owner/gatekeeper-template.md').replace(/\r\n/g, '\n'));
+  assert.doesNotMatch(template, /<compact tokens>|<handoff tokens>|get_usage|Context notice|Handoff notice/);
+  assert.match(template, /Context needs no owner action: never ask <owner> to compact a session/);
+  // The checker.
+  const extra = (lines) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${lines}`);
+  for (const v of ['off', 'bind', 'auto_fix', 'auto_fix (owner, 2026-11-12)']) {
+    assert.deepEqual(checkConfig(extra(`- pr_monitor: ${v}`)).errors, [], v);
+  }
+  assert.match(checkConfig(extra('- pr_monitor: always')).errors.join('\n'), /pr_monitor must be off, bind or auto_fix/);
+  assert.match(checkConfig(extra('- pr_monitor: auto-fix')).errors.join('\n'), /pr_monitor must be off, bind or auto_fix/);
+  for (const v of ['on', 'off', 'on (owner, 2026-11-12)']) {
+    assert.deepEqual(checkConfig(extra(`- sidebar_groups: ${v}`)).errors, [], v);
+  }
+  assert.match(checkConfig(extra('- sidebar_groups: maybe')).errors.join('\n'), /sidebar_groups must be on or off/);
+  assert.deepEqual(checkConfig(extra('- pr_monitor: bind\n- sidebar_groups: off')).warnings, []);
 });
