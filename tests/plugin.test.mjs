@@ -487,7 +487,7 @@ test('an effort exception ends explicitly, the handoff lifecycle is documented a
   const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
   assert.match(skill, /effort-exception: ended session=<id> reason=<why>/);
   assert.match(skill, /the latest authoritative record wins over the others/);
-  assert.match(skill, /## PO handoff A PO hands its line to a fresh PO session when its own context passes `po_handoff_tokens`/);
+  assert.match(skill, /## PO handoff A PO is one long-lived session\. It never hands over because its context grew/);
   assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /\| `po_handoff` \| `off` \|/);
   const extra = (lines) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${lines}`);
   assert.deepEqual(checkConfig(extra('- po_handoff: on\n- agent_effort: high. Exception: xhigh only for hard security work.')).errors, []);
@@ -559,7 +559,6 @@ test('the gatekeeper template is wake-only', () => {
   assert.deepEqual([...new Set(prompt.match(/mcp__[a-z_]+__[a-z_]+/g))].sort(), [
     'mcp__ccd_session_mgmt__archive_session',
     'mcp__ccd_session_mgmt__get_session',
-    'mcp__ccd_session_mgmt__get_usage',
     'mcp__ccd_session_mgmt__list_sessions',
     'mcp__ccd_session_mgmt__send_message',
   ]);
@@ -573,7 +572,7 @@ test('the gatekeeper template is wake-only', () => {
   assert.deepEqual([...prompt.matchAll(/\bgh ((?:pr|api|issue|repo|run|workflow|project|auth|release|label|search|gist|secret|variable|cache|ruleset) [a-z]+)/g)].map((m) => m[1]), ['pr list']);
   assert.match(flat, /gh pr list --repo <owner\/repo> --state open --limit 200 --json number,labels,isDraft,mergeStateStatus,updatedAt/);
   assert.doesNotMatch(prompt, /\bgit [a-z]|\bcurl\b|\bgh api\b|create_scheduled_task|update_scheduled_task/);
-  for (const placeholder of ['<po rows>', '<owner/repo>', '<owner>', '<language>', '<active minutes>', '<quiet minutes>', '<compact tokens>', '<handoff tokens>', '<restart check>']) {
+  for (const placeholder of ['<po rows>', '<owner/repo>', '<owner>', '<language>', '<active minutes>', '<quiet minutes>', '<restart check>']) {
     assert.ok(prompt.includes(placeholder), placeholder);
   }
   // It archives its own run at the end, like the watchdog.
@@ -613,21 +612,17 @@ test('the gatekeeper wakes a PO that is not running when any of three reasons ho
   assert.doesNotMatch(rules, /wakes only the POs matching a gatekeeper reason|rewrites `stateFile`|"quietHours"/);
 });
 
-test('a compaction notice goes only in the wake of a PO woken in this run, above the token threshold', () => {
-  const flat = flatten(gatekeeperPrompt());
-  assert.match(flat, /Context check, for the POs you wake only/);
-  assert.match(flat, /call `mcp__ccd_session_mgmt__get_usage` with its session id/);
-  assert.match(flat, /When a started session's context is above <compact tokens> tokens/);
-  // The PO's own session gets a handoff notice, not a compaction notice.
-  assert.match(flat, /When the PO's own session is above <handoff tokens> tokens, that PO gets the handoff notice instead/);
-  assert.match(flat, /Handoff notice: your own context is <tokens> tokens, above the <handoff tokens> limit\. Hand your line to a fresh PO session now, as the product-owner skill's 'PO handoff' says/);
-  assert.match(flat, /tell <owner> in <language> on the first line to open a fresh PO session with the exact title <po title>/);
-  assert.match(flat, /Keep no record of notices/);
-  assert.match(flat, /A session cannot compact itself; '\/compact' sent as a message is read as text, not as a command; and clear_session refuses Remote Control sessions/);
-  assert.match(flat, /tell <owner> in <language> to press 'Compact session' on each of them in the app/);
+test('the gatekeeper reads no context size and never asks the owner to compact or open a PO session', () => {
+  const prompt = gatekeeperPrompt();
+  const flat = flatten(prompt);
+  assert.doesNotMatch(prompt, /get_usage|Context check|Context notice|Handoff notice|<compact tokens>|<handoff tokens>|<tokens>|Compact session|compact itself/);
+  assert.doesNotMatch(flat, /fresh PO session/);
+  assert.match(flatten(gatekeeper()), /Context needs no owner action: never ask <owner> to compact a session or open a new PO session because of context size/);
   const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
-  assert.match(skill, /A sub-session above `compact_notice_tokens` \(500000\) goes into a compaction notice in that PO's wake message/);
-  assert.match(skill, /The PO's own session above `po_handoff_tokens` \(250000\) gets a handoff notice instead/);
+  assert.match(skill, /\*\*No context notices\.\*\* The run reads no session's context size and sends no message that asks the owner to compact a session, open a new PO session or restart anything/);
+  assert.match(skill, /The PO is one long-lived session\. It relies on the app's automatic context compaction and never asks the owner to compact it, restart it or open a new PO session because of its context size/);
+  assert.doesNotMatch(skill, /Compact session|po_handoff_tokens|fresh PO session/);
+  assert.match(flatten(gatekeeper()), /It reads no session's context size and sends no notice that asks the owner to compact a session or open a new PO session/);
 });
 
 test('the gatekeeper has one task id per repository, an off-the-half-hour cron and no state file', () => {
@@ -667,10 +662,10 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   const check = (extra) => checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${extra}`));
   const err = (extra) => check(extra).errors.join('\n');
   const clean = { errors: [], warnings: [] };
-  assert.deepEqual(check('- po_wake: gatekeeper\n- gatekeeper_model: claude-haiku-5-5\n- gatekeeper_active_minutes: 60\n- gatekeeper_quiet_minutes: 180\n- compact_notice_tokens: 500000\n- po_handoff_tokens: 250000'), clean);
+  assert.deepEqual(check('- po_wake: gatekeeper\n- gatekeeper_model: claude-haiku-5-5\n- gatekeeper_active_minutes: 60\n- gatekeeper_quiet_minutes: 180'), clean);
   for (const ok of ['- po_wake: watchdog', '- po_wake: off (owner, 2026-11-04)', '- gatekeeper_active_minutes: 5', '- gatekeeper_active_minutes: 1440 (owner)',
-    '- compact_notice_tokens: 50000', '- compact_notice_tokens: 2000000', '- gatekeeper_quiet_minutes: 30', '- gatekeeper_quiet_minutes: 1440 (owner)',
-    '- po_handoff_tokens: 50000', '- po_handoff_tokens: 2000000', '- po_handoff_tokens: none', '- po_handoff_tokens: 250000 (owner, 2026-11-12)', '- coordinator_line: none']) {
+    '- gatekeeper_quiet_minutes: 30', '- gatekeeper_quiet_minutes: 1440 (owner)',
+    '- coordinator_line: none']) {
     assert.deepEqual(check(ok), clean, ok);
   }
   assert.match(err('- po_wake: always'), /po_wake must be gatekeeper, watchdog or off/);
@@ -679,7 +674,6 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
     ['gatekeeper_active_minutes', ['4', '1441', '0', 'sixty', '60.5', '60min', 'none', '-5'], '5 to 1440'],
     ['gatekeeper_quiet_minutes', ['29', '1441', '0', 'three hours', '180.5', '180min', 'none'], '30 to 1440'],
     ['gatekeeper_quiet_hours', ['0', '73', 'four', '4h', '1.5'], '1 to 72'],
-    ['compact_notice_tokens', ['49999', '2000001', '500k', 'none', '500000.5'], '50000 to 2000000'],
   ]) {
     for (const value of bad) assert.match(err(`- ${key}: ${value}`), new RegExp(`${key} must start with an integer from ${range}`), `${key}: ${value}`);
   }
@@ -689,9 +683,14 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
     assert.deepEqual(r.errors, [], v);
     assert.match(r.warnings.join('\n'), /gatekeeper_quiet_hours is no longer used: the gatekeeper wakes a quiet PO after gatekeeper_quiet_minutes; remove it/, v);
   }
-  // po_handoff_tokens is an integer in range or none.
-  for (const bad of ['49999', '2000001', '250k', 'soon', '250000.5', '-1', '0']) {
-    assert.match(err(`- po_handoff_tokens: ${bad}`), /po_handoff_tokens must start with an integer from 50000 to 2000000, or be none/, bad);
+  // compact_notice_tokens and po_handoff_tokens are no longer used (2.11.0): accepted for one version,
+  // with a warning, and never an error, whatever the value.
+  for (const key of ['compact_notice_tokens', 'po_handoff_tokens']) {
+    for (const v of ['500000', '250000', 'none', '5', 'soon']) {
+      const r = check(`- ${key}: ${v}`);
+      assert.deepEqual(r.errors, [], `${key}: ${v}`);
+      assert.match(r.warnings.join('\n'), new RegExp(`${key} is no longer used: the gatekeeper reads no context size and asks the owner for nothing; remove it`), `${key}: ${v}`);
+    }
   }
   assert.match(err('- gatekeeper_quiet_hours: 0'), /gatekeeper_quiet_hours must start with an integer from 1 to 72/);
   // coordinator_line is no longer used: accepted for one version, with a warning, and never an error.
@@ -710,21 +709,22 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   // Every key is in the schema and the sample, so none reads as prose.
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
   const sample = parseConfig(read('plugins/cc-po/skills/setup/sample-config.md')).values;
-  for (const [key, fallback] of [['po_wake', 'gatekeeper'], ['gatekeeper_model', 'claude-haiku-5-5'], ['gatekeeper_active_minutes', '60'], ['gatekeeper_quiet_minutes', '180'], ['compact_notice_tokens', '500000'], ['po_handoff_tokens', '250000']]) {
+  for (const [key, fallback] of [['po_wake', 'gatekeeper'], ['gatekeeper_model', 'claude-haiku-5-5'], ['gatekeeper_active_minutes', '60'], ['gatekeeper_quiet_minutes', '180']]) {
     assert.match(schema, new RegExp(`\\| \`${key}\` \\| \`${fallback}\` \\|`), key);
     assert.equal(sample[key], fallback, key);
   }
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.10.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.10.0');
+test('the version is 2.11.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.11.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
   assert.match(readme, /### Upgrading to 2\.8\.0/);
   assert.match(readme, /### Upgrading to 2\.9\.0/);
   assert.match(readme, /### Upgrading to 2\.10\.0/);
+  assert.match(readme, /### Upgrading to 2\.11\.0/);
   assert.match(readme, /The Claude app gatekeeper keeps no state file/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
@@ -853,6 +853,7 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
       activeMinutes: 60,
       quietHours: 4,
       compactTokens: 500000,
+      handoffTokens: 250000,
       coordinatorLabel: 'line:platform',
       stateFile,
       brainDir,
@@ -877,9 +878,9 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
     });
 
     // Pass 1 (05:00): all three reasons hold for the Engage PO, and each is named. The quiet reason
-    // needs work in flight, which it has (a sub-session and an open PR). Its own context is above
-    // the handoff threshold, so the handoff notice rides along. The Meetings PO was active 10 min
-    // ago and is skipped.
+    // needs work in flight, which it has (a sub-session and an open PR). Its own context is large
+    // (522000 tokens), and no context or handoff notice is sent: the old compactTokens and
+    // handoffTokens keys are ignored. The Meetings PO was active 10 min ago and is skipped.
     let sent = [];
     run(configPath, '2026-11-06T05:00:00Z', { bootTime: '2026-11-06T01:00:00Z', appStartTime: '2026-11-06T01:05:00Z' }, [pr('2026-11-06T02:00:00Z')], sent);
     assert.equal(sent.length, 1);
@@ -889,10 +890,7 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
     assert.match(sent[0].msg, /Idle sub-sessions of your line: .*#2333 CRM worker/);
     assert.match(sent[0].msg, /Do one short turn: merge or review the ready PRs, feed or archive the idle sub-sessions, resume work a crash cut off, answer messages\. Then end the turn\./);
     assert.match(sent[0].msg, /Machine boot 2026-11-06T01:00:00Z, app start 2026-11-06T01:05:00Z/);
-    assert.match(sent[0].msg, /Handoff notice at 2026-11-06T05:00:00Z: your own context is 522000 tokens, above the 250000 limit\. Hand your line to a fresh PO session now/);
-    assert.match(sent[0].msg, /with the exact title Ludy Engage Product Owner, and name the retired conversation \(\S+\) in the first message for the new one/);
-    // The PO itself is never in a compaction notice.
-    assert.doesNotMatch(sent[0].msg, /Context notice at .*Ludy Engage Product Owner \(/);
+    assert.doesNotMatch(sent[0].msg, /Handoff notice|Context notice|Compact|fresh PO session/);
     // No state file is written.
     assert.equal(existsSync(stateFile), false);
 
@@ -951,14 +949,13 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
     assert.match(meetingsWake, /\(reasons: quiet for 200 minutes with work in flight\)\. Ready PRs of your line: none\. Idle sub-sessions of your line: none\./);
     for (const m of sent) assert.doesNotMatch(m.msg, /#2671|#2672|#2670/);
 
-    // A config that sets the new thresholds is honoured: a 120-minute quiet window wakes the Meetings PO
-    // at 06:55 (125 minutes), and handoffTokens "none" turns the handoff notice off.
+    // A config that sets the quiet window is honoured: a 120-minute window wakes the Meetings PO
+    // at 06:55 (125 minutes).
     const tunedPath = join(dir, 'tuned.json');
-    writeFileSync(tunedPath, JSON.stringify({ ...bare, quietMinutes: 120, handoffTokens: 'none' }));
+    writeFileSync(tunedPath, JSON.stringify({ ...bare, quietMinutes: 120 }));
     sent = [];
     run(tunedPath, '2026-11-06T06:55:00Z', { bootTime: '2026-11-06T00:00:00Z', appStartTime: '' }, [draft], sent);
     assert.ok(sent.some((m) => m.id === meetingsPoId && /quiet for 125 minutes with work in flight/.test(m.msg)));
-    for (const m of sent) assert.doesNotMatch(m.msg, /Handoff notice/);
 
     // A restart check that fails (empty times) is not a restart reason.
     sent = [];
@@ -989,15 +986,13 @@ test('POs are peers and shared_core_review is a known key that defaults to none'
   assert.match(read('plugins/cc-po/skills/setup/sample-config.md'), /^- shared_core_review: none$/m);
 });
 
-// 2.10.0: size-triggered PO handoff, a lean PO context, archiving, Production handoff and cheaper tasks.
-test('the PO hands over by context size, keeps its context lean, archives finished sessions and frees Production-waiting slots', () => {
+// 2.10.0 and 2.11.0: no owner-facing PO handoff, a lean PO context, archiving, Production handoff and cheaper tasks.
+test('the PO is one long-lived session, keeps its context lean, archives finished sessions and frees Production-waiting slots', () => {
   const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
-  // Size, not the clock.
-  assert.match(skill, /not at a fixed time\. A PO replaced each morning would still grow all day/);
-  assert.doesNotMatch(skill, /a fresh PO each day/);
-  assert.match(skill, /`po_handoff_tokens: none` turns the size trigger off/);
-  assert.match(skill, /the PO reads its own size at the start of each owner turn and at each check-in/);
-  assert.match(skill, /renames its own session to `<title> \(retired <UTC date>\)` with `set_session_title`/);
+  // No handoff that needs the owner (JOY, 2026-11-12): a handoff only when the owner replaces a PO.
+  assert.doesNotMatch(skill, /a fresh PO each day|po_handoff_tokens|size trigger/i);
+  assert.match(skill, /A handoff happens only when the owner themself replaces a PO/);
+  assert.match(skill, /Nothing in this skill asks for one\./);
   // A lean PO context.
   assert.match(skill, /cut the output with `--jq`/);
   assert.match(skill, /Delegate wide reads\./);
@@ -1010,12 +1005,10 @@ test('the PO hands over by context size, keeps its context lean, archives finish
   // Fewer, cheaper tasks.
   assert.match(skill, /one checklist on one cleanup issue per line per week/);
   // Review follow-ups: the upgrade path, the title precondition, the retired session and a durable model record.
-  assert.match(skill, /Found and enabled, but its prompt is older than the current template \(made by 2\.9\.0 or earlier\): its settings line says "active N min" and has no "quiet after N min"/);
-  assert.match(skill, /The rename is a hard precondition, not a courtesy/);
+  assert.match(skill, /Found and enabled, but its prompt is older than the current template \(made by 2\.10\.0 or earlier\): its settings line has no "quiet after N min", or it still has a context check/);
   assert.match(skill, /The retired PO session is <session id>\./);
   assert.match(skill, /a `handoff:` to the PO for Production steps follows the next bullet/);
   assert.match(skill, /`model-exception: <model> <effort> session=<id> decision=<id>`/);
-  assert.match(skill, /at the start of each owner turn and at each check-in the PO reads its own size with `get_usage`/);
   assert.match(skill, /the PO's own waiting claims for Production steps/);
   assert.match(skill, /posts `checkpoint: session=<PO session id> waiting for <what>` so the repository's stale-claim sweep sees activity/);
   assert.match(skill, /`Model exception: <model>, <effort>, <UTC timestamp>`/);
@@ -1024,12 +1017,13 @@ test('the PO hands over by context size, keeps its context lean, archives finish
   assert.match(skill, /`Model exception: <model>, <effort>, <decision id>`/);
   assert.match(skill, /never above `agent_model` and `agent_effort`, and never for security, money, migration, credential or Production work/);
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
-  assert.match(schema, /\| `po_handoff_tokens` \| `250000` \|/);
+  assert.match(schema, /\| `po_handoff_tokens` \| none \| Released in 2\.10\.0 and withdrawn in 2\.11\.0/);
+  assert.match(schema, /\| `compact_notice_tokens` \| none \| No longer used since 2\.11\.0/);
   assert.match(schema, /\| `gatekeeper_quiet_minutes` \| `180` \|/);
   assert.match(schema, /\| `coordinator_line` \| none \| No longer used since 2\.10\.0/);
   // The Antigravity rules carry the new config keys.
   const rules = read('plugins/cc-po/rules/AGENTS.md');
   assert.match(rules, /"quietMinutes": <gatekeeper_quiet_minutes>/);
-  assert.match(rules, /"handoffTokens": <po_handoff_tokens or "none">/);
+  assert.doesNotMatch(rules, /handoffTokens|compactTokens/);
   assert.doesNotMatch(rules, /coordinatorLabel/);
 });

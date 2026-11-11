@@ -12,13 +12,11 @@
 //     "language": "<report_language>",
 //     "activeMinutes": 60,        (a sub-session idle this long is listed in the wake)
 //     "quietMinutes": 180,        (a PO with work in flight is woken after this much quiet)
-//     "compactTokens": 500000,    (compaction notice for a sub-session above this)
-//     "handoffTokens": 250000,    (handoff notice for a PO above this; "none" for no notice)
 //     "pos": [
 //       { "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }
 //     ]
 //   }
-// Unknown or old keys (stateFile, quietHours, coordinatorLabel) are ignored: the
+// Unknown or old keys (stateFile, quietHours, coordinatorLabel, compactTokens, handoffTokens) are ignored: the
 // gatekeeper keeps no state file, and uses each PO's last activity as its memory.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -229,15 +227,11 @@ function prLabelNames(pr) {
 //   (c) quiet: the PO's last activity is quietMinutes or more before now AND its
 //       line has work in flight (an open PR of the line, draft or ready, or an
 //       in-flight sub-session).
-// A PO whose own context is above handoffTokens gets a handoff notice.
+// No context notice is sent: a PO's context needs no owner action.
 export function evaluateGatekeeper({ config, poInspections, restartTimes, openPrs, nowMs = Date.now() }) {
   const nowIso = new Date(nowMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const activeMinutes = Number.isInteger(config.activeMinutes) ? config.activeMinutes : 60;
   const quietMinutes = Number.isInteger(config.quietMinutes) ? config.quietMinutes : 180;
-  const compactTokens = Number.isInteger(config.compactTokens) ? config.compactTokens : 500_000;
-  const handoffTokens = Number.isInteger(config.handoffTokens)
-    ? config.handoffTokens
-    : (String(config.handoffTokens).toLowerCase() === 'none' ? null : 250_000);
   const owner = config.owner || 'owner';
   const language = config.language || 'English';
   const activeWindowMs = activeMinutes * 60_000;
@@ -318,28 +312,10 @@ export function evaluateGatekeeper({ config, poInspections, restartTimes, openPr
       message += ` Machine boot ${restartTimes?.bootTime || 'unknown'}, app start ${restartTimes?.appStartTime || 'unknown'}. A restart stopped active processes and subagents. Tell ${owner} in ${language} on the first line that you are back and how long you were away, recreate any one-shot you had pending, and resume every subagent that had pending work.`;
     }
 
-    // Context notices, only in the message of a PO that is woken in this run.
-    const handoff = handoffTokens !== null
-      && typeof inspection.po.contextTokens === 'number' && inspection.po.contextTokens > handoffTokens;
-    if (handoff) {
-      message += `\n\nHandoff notice at ${nowIso}: your own context is ${inspection.po.contextTokens} tokens, above the ${handoffTokens} limit. Hand your line to a fresh PO session now, as the product-owner skill's 'PO handoff' says: finish only the step you are in, write the handoff state, tell ${owner} in ${language} on the first line to open a fresh PO session with the exact title ${title}, and name the retired conversation (${inspection.po.conversationId}) in the first message for the new one. Do not read more, and start no new sub-session.`;
-    }
-    const large = [];
-    for (const sub of inspection.subSessions ?? []) {
-      if (!isSessionLiveRunning(sub, latestRestartMs, nowMs) && typeof sub.contextTokens === 'number' && sub.contextTokens > compactTokens) {
-        large.push(`${sub.role || 'subagent'} (${sub.conversationId}, ${sub.contextTokens} tokens)`);
-      }
-    }
-    if (large.length > 0) {
-      message += `\n\nContext notice at ${nowIso}: these sessions of your line hold more than ${compactTokens} tokens of context: ${large.join('; ')}. A session cannot compact itself, and '/compact' sent as a message is read as text, not as a command. In your next report, tell ${owner} in ${language} to compact each of them in the app. Do not wait for it, and do not read more because of it.`;
-    }
-
     actions.push({
       title,
       conversationId: inspection.po.conversationId,
       reasons,
-      notice: large.length > 0,
-      handoffNotice: handoff,
       message,
     });
   }
@@ -575,7 +551,7 @@ export function runGatekeeper(configPath, deps = {}) {
     }
     try {
       send(action.conversationId, action.message);
-      const tags = [action.reasons.join(' + '), action.notice ? 'compact-notice' : null, action.handoffNotice ? 'handoff-notice' : null].filter(Boolean).join('+');
+      const tags = [action.reasons.join(' + ')].filter(Boolean).join('+');
       summaryParts.push(`${action.title}: woke (${tags})`);
     } catch (err) {
       process.stderr.write(`gatekeeper send error (${action.title}): ${err.message}\n`);

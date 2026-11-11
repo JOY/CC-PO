@@ -92,8 +92,7 @@ Everything else takes its schema default unless the user names it. That
 includes the sub-sessions' model and effort (`agent_model`, `agent_effort`,
 `subagent_effort`): left out, a sub-session runs on the PO's own model and
 effort. The same goes for the wake-up keys (`po_wake`, `gatekeeper_model`,
-`gatekeeper_active_minutes`, `gatekeeper_quiet_minutes`,
-`compact_notice_tokens`, `po_handoff_tokens`). Mention the defaults you used in the summary so the user can change
+`gatekeeper_active_minutes`, `gatekeeper_quiet_minutes`). Mention the defaults you used in the summary so the user can change
 them.
 
 ### 3. Read the board
@@ -190,9 +189,8 @@ Tell the user, in `report_language`:
   work, so no Product Owner keeps its own check-in timer), unless `po_wake`
   is `off`; the other Product Owners only check that it exists. The
   gatekeeper's model and thresholds are the keys
-  `gatekeeper_model`, `gatekeeper_active_minutes`, `gatekeeper_quiet_minutes`,
-  `compact_notice_tokens` and `po_handoff_tokens`, which take their defaults
-  unless the user names them (`po_watchdog` is the old name of `po_wake`; `gatekeeper_quiet_hours` and `coordinator_line` are no longer used);
+  `gatekeeper_model`, `gatekeeper_active_minutes` and `gatekeeper_quiet_minutes`, which take their defaults
+  unless the user names them (`po_watchdog` is the old name of `po_wake`; `gatekeeper_quiet_hours`, `coordinator_line`, `compact_notice_tokens` and `po_handoff_tokens` are no longer used);
 - that sub-sessions need the Claude desktop app's Code tab, and that a
   terminal-only Claude Code session can use `task-claim` and the review
   flow but cannot start or message sub-sessions.

@@ -232,13 +232,8 @@ Adjust it if your integration branch uses another merge method.
   time; or its last activity is `gatekeeper_quiet_minutes` (180) or more old
   while its line has work in flight. The wake message
   names every reason that holds, lists the line's ready pull requests and idle
-  sub-sessions, and asks for one short turn. When one of a woken PO's
-  sub-sessions is above `compact_notice_tokens` (500000), the message
-  adds a notice, so the PO can ask the owner to press "Compact session" (a
-  session cannot compact itself, and `/compact` sent as a message is read as
-  text); when the PO's own session is above `po_handoff_tokens` (250000), the
-  message adds a handoff notice instead, and the PO hands its line to a fresh
-  PO session. The first runs may ask the owner to approve the restart check and
+  sub-sessions, and asks for one short turn. It reads no context size and asks the
+  owner for nothing about context. The first runs may ask the owner to approve the restart check and
   `gh pr list` once. The first PO of the
   repository to find no gatekeeper creates it, in a turn the owner typed,
   after the owner approves it once per machine; the other POs only check that
@@ -268,18 +263,19 @@ Adjust it if your integration branch uses another merge method.
   with an `effort-exception: ended session=<id> reason=<why>` comment (or an
   `ended` line in the handoff file); the latest record wins over the brief,
   which a running session cannot update.
-- **PO handoff.** A PO hands its line to a fresh PO session when its own
-  context passes `po_handoff_tokens` (default 250000), not on a clock: the
-  gatekeeper tells a PO it wakes that its context is large (and the PO reads
-  its own size at the start of each owner turn and at each check-in), and the PO then writes its handoff and
-  asks you to open a fresh PO session with the same title. With
-  `po_handoff: on` the handoff is a file in `po_check_in_dir` (sub-sessions
-  in flight, effort exceptions, pending owner decisions, holds and next
-  steps); the next PO reads it first, checks it against GitHub and tells each
-  running sub-session its new PO's session id. Left out or `off`, no file is
-  kept and the next PO rebuilds from GitHub. The PO also keeps its own
-  context lean: short `gh --jq` output, wide reads delegated to subagents or
-  sub-sessions, no transcripts or long files read into the PO.
+- **One long-lived PO.** A PO is never replaced because its context grew, and
+  it never asks you to compact it, restart it or open a new PO session: it
+  relies on the app's automatic compaction, and its state is on GitHub and in
+  its check-in file, which it keeps current so a compaction loses nothing. It
+  keeps its context lean: short `gh --jq` output, wide reads delegated to
+  subagents or sub-sessions, no transcripts or long files read into the PO.
+  Only when you replace a PO yourself (a new machine, a changed owner) does a
+  handoff happen: with `po_handoff: on` it is a file in `po_check_in_dir`
+  (sub-sessions in flight, effort and model exceptions, pending owner
+  decisions, holds and next steps) that the next PO reads first, checks
+  against GitHub and uses to tell each running sub-session its new PO's
+  session id. Left out or `off`, no file is kept and the next PO rebuilds from
+  GitHub.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,
@@ -494,6 +490,32 @@ update the gatekeeper task with `update_scheduled_task` from the new
   per line; a small line may be covered by another line's PO; a current owner
   decision may let low-risk small tasks run on a cheaper model or effort
   (`Model exception:` in the brief).
+
+### Upgrading to 2.11.0
+
+Config edit: remove `po_handoff_tokens` and `compact_notice_tokens` if you set
+them (the checker warns while they are present). On Antigravity, re-copy
+`plugins/cc-po` to `~/.gemini/config/plugins/cc-po` and restart Antigravity.
+Then ask a PO to update the gatekeeper task with `update_scheduled_task` from
+the new `gatekeeper-template.md` (a scheduled task does not read the config).
+This repository has no separate changelog file: these notes are the release
+notes.
+
+- Withdraws the size-triggered PO handoff that 2.10.0 added. The owner's rule
+  (JOY, 2026-11-12) is that no step may need the owner to open a new PO
+  session or to compact one: a PO is one long-lived session that relies on the
+  app's automatic compaction, with its state on GitHub and in its check-in
+  file. `po_handoff_tokens` is gone, and so is the gatekeeper's whole context
+  check: it no longer calls `get_usage`, sends no compaction notice and no
+  handoff notice, and the prompt loses the `<compact tokens>` and
+  `<handoff tokens>` placeholders. `compact_notice_tokens` is no longer used.
+- `po_handoff` stays `on` or `off` (default `off`) and now covers only the
+  case where the owner replaces a PO. The lean-context guidance stays (short
+  `--jq` output, wide reads delegated, no transcripts or long files read into
+  the PO), and a large sub-session is the PO's to handle, never the owner's.
+- The gatekeeper changes of 2.10.0 stay: only the PO's own line's PRs count,
+  the quiet reason fires after `gatekeeper_quiet_minutes` (180) while the line
+  has work in flight, and the restart reason is unchanged.
 
 ## License
 
