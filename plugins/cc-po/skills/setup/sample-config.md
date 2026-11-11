@@ -91,7 +91,7 @@ skill.
 - gatekeeper_active_minutes: 60
 - po_check_in_dir: `~/.claude/po-state`
 - po_handoff: off
-- pr_monitor: bind
+- pr_monitor: status
 - sidebar_groups: off
 
 ## Sprint review

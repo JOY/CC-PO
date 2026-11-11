@@ -310,11 +310,28 @@ export function checkConfig(text, { root } = {}) {
   }
   // pr_monitor and sidebar_groups drive the desktop app's PR monitor and
   // sidebar tools (2.12.0); a note may follow the value.
-  if (values.pr_monitor !== undefined && !/^(off|bind|auto_fix)(?![\w-])/i.test(values.pr_monitor)) {
-    errors.push('pr_monitor must be off, bind or auto_fix');
+  // bind, auto_fix and on use tools that ask the owner to approve in the app's
+  // default permission mode, so they count only with the owner's attribution in
+  // a note; without one the PO runs the read-only or off behaviour.
+  if (values.pr_monitor !== undefined) {
+    if (!/^(off|status|bind|auto_fix)(?![\w-])/i.test(values.pr_monitor)) {
+      errors.push('pr_monitor must be off, status, bind or auto_fix');
+    } else {
+      const m = values.pr_monitor.match(/^(bind|auto_fix)(?![\w-])\s*(\S?)/i);
+      if (m && !m[2]) {
+        warnings.push(`pr_monitor ${m[1]} needs the owner's attribution in a note, for example "auto_fix (owner, 2026-11-12)"; without one the PO runs status`);
+      }
+    }
   }
-  if (values.sidebar_groups !== undefined && !/^(on|off)(?![\w-])/i.test(values.sidebar_groups)) {
-    errors.push('sidebar_groups must be on or off');
+  if (values.sidebar_groups !== undefined) {
+    if (!/^(on|off)(?![\w-])/i.test(values.sidebar_groups)) {
+      errors.push('sidebar_groups must be on or off');
+    } else {
+      const m = values.sidebar_groups.match(/^(on)(?![\w-])\s*(\S?)/i);
+      if (m && !m[2]) {
+        warnings.push('sidebar_groups on needs the owner\'s attribution in a note, for example "on (owner, 2026-11-12)"; without one the PO runs off');
+      }
+    }
   }
   // The PO passes an effort to start_session, which takes one of a fixed set
   // of levels, so another value would fail every dispatch; a note may follow
