@@ -28,6 +28,7 @@ export const KNOWN = new Set([
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
   'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
+  'pr_monitor', 'sidebar_groups',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -306,6 +307,36 @@ export function checkConfig(text, { root } = {}) {
   }
   if (values.po_handoff !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_handoff)) {
     errors.push('po_handoff must be on or off');
+  }
+  // pr_monitor and sidebar_groups drive the desktop app's PR monitor and
+  // sidebar tools (2.12.0); a note may follow the value. bind, auto_fix and on
+  // use tools that ask the owner to approve in the app's default permission
+  // mode, and a session cannot work past a pending prompt, so they count only
+  // when the note names the owner (or a decision id), gives a date and says
+  // the sessions run in auto or bypass mode; otherwise the PO runs status/off.
+  const attributed = (note) => (/\bowner\b|\bD-\d+\b/i.test(note) && /(?<!\d)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)/.test(note) && /\b(?:auto|bypass)\b/i.test(note));
+  const unquote = (v) => v.replace(/^`([^`]*)`/, '$1');
+  if (values.pr_monitor !== undefined) {
+    const v = unquote(values.pr_monitor);
+    if (!/^(off|status|bind|auto_fix)(?![\w-])/i.test(v)) {
+      errors.push('pr_monitor must be off, status, bind or auto_fix');
+    } else {
+      const m = v.match(/^(bind|auto_fix)(?![\w-])(.*)$/is);
+      if (m && !attributed(m[2])) {
+        warnings.push(`pr_monitor ${m[1]} needs a note naming the owner (or a decision id), a date and that sessions run in auto or bypass mode, for example "auto_fix (owner, 2026-11-12, sessions in auto mode)"; without it the PO runs status`);
+      }
+    }
+  }
+  if (values.sidebar_groups !== undefined) {
+    const v = unquote(values.sidebar_groups);
+    if (!/^(on|off)(?![\w-])/i.test(v)) {
+      errors.push('sidebar_groups must be on or off');
+    } else {
+      const m = v.match(/^on(?![\w-])(.*)$/is);
+      if (m && !attributed(m[1])) {
+        warnings.push('sidebar_groups on needs a note naming the owner (or a decision id), a date and that the PO runs in auto or bypass mode, for example "on (owner, 2026-11-12, PO in auto mode)"; without it the PO runs off');
+      }
+    }
   }
   // The PO passes an effort to start_session, which takes one of a fixed set
   // of levels, so another value would fail every dispatch; a note may follow

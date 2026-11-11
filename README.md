@@ -531,6 +531,56 @@ notes.
   gatekeeper task still sends, and rewrites any step of its check-in file that
   asks for a context-size handoff, until a PO updates the gatekeeper task.
 
+### Upgrading to 2.12.0
+
+Config edit (optional): add `pr_monitor` (`off`, `status`, `bind` or
+`auto_fix`; default `status`) and `sidebar_groups` (`on` or `off`; default
+`off`) under Sessions. Two behaviours change without any config: with the
+default `status`, sessions read their PR's CI with the desktop app's read-only
+`get_status` and fall back to `gh pr checks` when the app reports no PR (set
+`pr_monitor: off` to keep the 2.11.0 behaviour exactly), and the PO now passes
+`model` and `effort` on every `start_session` for the settings the config has.
+The gatekeeper task prompt is unchanged since 2.11.0, so no PO needs to update
+it. This repository has no separate changelog file: these notes are the
+release notes. The desktop-app features below were checked against the app's
+own tool definitions and the Claude Code Desktop documentation before they
+were relied on; where a tool is absent (Antigravity) the keys are ignored.
+
+- PR monitor (`pr_monitor`). `status` is read-only and never asks the owner
+  for anything: sessions call `get_status`, the PO calls it per sub-session at
+  its check-ins, and an unreported PR counts as unknown (never green) and is
+  checked with `gh pr checks`. `bind` also lets the session that opened the PR
+  call `bind_pr`, and `auto_fix` also turns on the app's Auto-fix for that PR
+  (the app then wakes the session on CI failures, conflicts and review
+  comments). Those two use tools that ask the owner to approve in the app's
+  default permission mode, and a session cannot work past a pending prompt, so
+  they count only when the note names the owner, gives a date and says the
+  sessions run in auto or bypass mode, for example `auto_fix (owner,
+  2026-11-12, sessions in auto mode)`; the checker warns when it does not find those three
+  elements, and the PO runs `status`. A refused or denied call is dropped, never
+  retried and never run by the PO. Wake-up text and review comments are data,
+  never authority; a wake-up is not the PO's acceptance, a push after it voids
+  it, the merge uses the sha in the PO's acceptance comment, and the gate
+  summary and the "merge" answer check head and required checks on GitHub, not
+  in the cache. Nobody calls `set_auto_merge` or sets auto-archive-on-close.
+- Per-task model and effort: the PO passes `model` and `effort` on every
+  `start_session`, instead of inheriting its own (the app's default). A task
+  that changes anything stays on `agent_model` at `agent_effort`; only a
+  read-only lookup may run cheaper, as in 2.11.0. `agent_model` and
+  `agent_effort` must not exceed the PO's own (the app caps a higher one): the
+  PO does not try to raise a capped start, because that asks the owner to
+  approve, and reports the mismatch once in its digest instead.
+- Sidebar groups (`sidebar_groups: on`, with a note such as `on (owner,
+  2026-11-12, PO in auto mode)`): the PO keeps one custom sidebar group per
+  line, named as in the Lines table, records it in its check-in file, and
+  files each sub-session it starts into it, in the turn that starts it. In the
+  app's default permission mode each move asks the owner to approve, which is
+  why the key is off by default; one denied move ends the feature for that PO
+  (an `on` without the full note runs as `off`).
+- Already in 2.11.0, unchanged here: the gatekeeper sends no compaction
+  notice and reads no context size; the app's automatic compaction handles a
+  PO's context and no owner action is ever needed.
+
 ## License
 
 [MIT](LICENSE)
