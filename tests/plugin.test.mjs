@@ -723,8 +723,8 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.12.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.12.0');
+test('the version is 2.12.1 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.12.1');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -1137,4 +1137,25 @@ test('pr_monitor and sidebar_groups are checked and the prompting values need th
     assert.deepEqual(r.errors, [], v);
     assert.match(r.warnings.join('\n'), /sidebar_groups on needs a note naming the owner/, v);
   }
+});
+
+// 2.12.1: the owner's own name (the owner_name value) counts as naming the owner in the attribution note.
+test('the owner_name value counts as naming the owner in a pr_monitor or sidebar_groups note', () => {
+  const extra = (lines) => minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${lines}`);
+  for (const v of ['auto_fix (Sam, 2026-11-12, sessions in auto mode)', 'bind (sam approved, 2026-11-12, bypass mode)', '`auto_fix` (Sam, 2026-11-12, sessions in auto mode)']) {
+    const r = checkConfig(extra(`- pr_monitor: ${v}`));
+    assert.deepEqual(r.errors, [], v);
+    assert.deepEqual(r.warnings, [], v);
+  }
+  const side = checkConfig(extra('- sidebar_groups: on (Sam, 2026-11-12, PO in auto mode)'));
+  assert.deepEqual(side.errors, []);
+  assert.deepEqual(side.warnings, []);
+  // Only a whole word counts, and the date and the mode are still required.
+  for (const v of ['auto_fix (Samuel, 2026-11-12, sessions in auto mode)', 'auto_fix (Samsung, 2026-11-12, sessions in auto mode)',
+    'auto_fix (Sam, sessions in auto mode)', 'auto_fix (Sam, 2026-11-12)']) {
+    const r = checkConfig(extra(`- pr_monitor: ${v}`));
+    assert.deepEqual(r.errors, [], v);
+    assert.match(r.warnings.join('\n'), /pr_monitor auto_fix needs a note naming the owner/, v);
+  }
+  assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /names the owner \(the word `owner`, the `owner_name` value, or a `decision_log` id\)/);
 });

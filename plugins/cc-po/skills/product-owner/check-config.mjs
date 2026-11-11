@@ -314,8 +314,15 @@ export function checkConfig(text, { root } = {}) {
   // mode, and a session cannot work past a pending prompt, so they count only
   // when the note names the owner (or a decision id), gives a date and says
   // the sessions run in auto or bypass mode; otherwise the PO runs status/off.
-  const attributed = (note) => (/\bowner\b|\bD-\d+\b/i.test(note) && /(?<!\d)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)/.test(note) && /\b(?:auto|bypass)\b/i.test(note));
+  // "Names the owner" means the word owner, a decision id, or the owner_name
+  // value itself (the config's required key), as a whole word.
   const unquote = (v) => v.replace(/^`([^`]*)`/, '$1');
+  const ownerName = values.owner_name === undefined ? '' : unquote(values.owner_name).trim();
+  const ownerNameRe = ownerName.length >= 2
+    ? new RegExp(`(?<![\\w])${ownerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w])`, 'i')
+    : null;
+  const attributed = (note) => ((/\bowner\b|\bD-\d+\b/i.test(note) || (ownerNameRe !== null && ownerNameRe.test(note)))
+    && /(?<!\d)\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)/.test(note) && /\b(?:auto|bypass)\b/i.test(note));
   if (values.pr_monitor !== undefined) {
     const v = unquote(values.pr_monitor);
     if (!/^(off|status|bind|auto_fix)(?![\w-])/i.test(v)) {
