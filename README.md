@@ -227,16 +227,18 @@ Adjust it if your integration branch uses another merge method.
   outside the project folder stops at a permission prompt nobody answers), and
   it never reads the repository. It leaves a PO alone while it is running,
   and otherwise wakes it when any of three things holds: a machine or app
-  restart came after its last activity; a pull request of its line (any
-  pull request, for the line `coordinator_line` names) is CLEAN or UNSTABLE
-  and newer than its last activity, with no waiting time; or its last
-  activity is `gatekeeper_active_minutes` (60) or more old. The wake message
+  restart came after its last activity; a pull request labelled with its own
+  line is CLEAN or UNSTABLE and newer than its last activity, with no waiting
+  time; or its last activity is `gatekeeper_quiet_minutes` (180) or more old
+  while its line has work in flight. The wake message
   names every reason that holds, lists the line's ready pull requests and idle
-  sub-sessions, and asks for one short turn. When a woken PO's session or one
-  of its sub-sessions is above `compact_notice_tokens` (500000), the message
+  sub-sessions, and asks for one short turn. When one of a woken PO's
+  sub-sessions is above `compact_notice_tokens` (500000), the message
   adds a notice, so the PO can ask the owner to press "Compact session" (a
   session cannot compact itself, and `/compact` sent as a message is read as
-  text). The first runs may ask the owner to approve the restart check and
+  text); when the PO's own session is above `po_handoff_tokens` (250000), the
+  message adds a handoff notice instead, and the PO hands its line to a fresh
+  PO session. The first runs may ask the owner to approve the restart check and
   `gh pr list` once. The first PO of the
   repository to find no gatekeeper creates it, in a turn the owner typed,
   after the owner approves it once per machine; the other POs only check that
@@ -266,12 +268,18 @@ Adjust it if your integration branch uses another merge method.
   with an `effort-exception: ended session=<id> reason=<why>` comment (or an
   `ended` line in the handoff file); the latest record wins over the brief,
   which a running session cannot update.
-- **PO handoff (optional).** With `po_handoff: on`, a PO that is retired (a
-  fresh PO each day, a new machine) writes the sub-sessions in flight, effort
-  exceptions, pending owner decisions, holds and next steps to a handoff file
-  in `po_check_in_dir`, and the next PO reads it first, checks it against
-  GitHub and tells each running sub-session its new PO's session id. Left out
-  or `off`, no file is kept.
+- **PO handoff.** A PO hands its line to a fresh PO session when its own
+  context passes `po_handoff_tokens` (default 250000), not on a clock: the
+  gatekeeper tells a PO it wakes that its context is large (and the PO may
+  read its own size at a check-in), and the PO then writes its handoff and
+  asks you to open a fresh PO session with the same title. With
+  `po_handoff: on` the handoff is a file in `po_check_in_dir` (sub-sessions
+  in flight, effort exceptions, pending owner decisions, holds and next
+  steps); the next PO reads it first, checks it against GitHub and tells each
+  running sub-session its new PO's session id. Left out or `off`, no file is
+  kept and the next PO rebuilds from GitHub. The PO also keeps its own
+  context lean: short `gh --jq` output, wide reads delegated to subagents or
+  sub-sessions, no transcripts or long files read into the PO.
 - **Reports and decisions.** Every PO check-in ends with a digest built from
   GitHub only (done, in progress, blocked, up next, stale). Product
   decisions the owner makes can be kept in a decision log the config names,
@@ -448,6 +456,44 @@ used, and the checker warns while it is present. On Antigravity, re-copy
   every line builds on and its paths. A PR of another line that changes
   them also gets that line's PO's review of those files only, asked and
   answered with PR comments. Absent or `none`, nothing changes.
+
+### Upgrading to 2.10.0
+
+This repository has no separate changelog file: the upgrade notes here are the
+release notes. Config edit: remove `coordinator_line` if you set it (the
+checker warns while it is present). On Antigravity, re-copy `plugins/cc-po` to
+`~/.gemini/config/plugins/cc-po` and restart Antigravity. Then ask a PO to
+update the gatekeeper task with `update_scheduled_task` from the new
+`gatekeeper-template.md`, because a scheduled task does not read the config.
+
+- A PO now hands over by context size, not by the clock. New key
+  `po_handoff_tokens` (default 250000, or `none`): the gatekeeper adds a
+  handoff notice to the wake of a PO whose own context is above it (its
+  existing `get_usage` read), and the PO writes its handoff and asks the owner
+  to open a fresh PO session. The compaction notice
+  (`compact_notice_tokens`) now covers sub-sessions only. `po_handoff` stays
+  `on` or `off` and only decides whether the handoff goes through a file.
+- The PO keeps its own context lean ("Keep the context small"): short
+  `--jq` outputs, wide reads delegated to a subagent or sub-session, no
+  transcripts or long files read into the PO.
+- The gatekeeper wakes less. It counts only pull requests labelled with the
+  PO's own line (`coordinator_line` is no longer used; a PO that covers
+  several lines lists all their labels in its gatekeeper row), and the quiet
+  reason fires after `gatekeeper_quiet_minutes` (new, default 180) and only
+  while the line has work in flight (an open PR with its label, draft or
+  ready, or a non-archived sub-session the PO started). The restart reason is
+  unchanged. `gatekeeper_active_minutes` (60) now only decides when a
+  sub-session is listed as idle. The gatekeeper's `gh pr list` query now
+  includes drafts (`isDraft`) and its prompt has new placeholders
+  (`<quiet minutes>`, `<handoff tokens>`).
+- Finished sub-sessions are archived at once (the owner allows the archive
+  tool once when the app asks). A sub-session that has only Production steps
+  left posts `handoff:` to the PO, the PO posts its own claim, then archives
+  the sub-session, so a slot is not held while Production waits.
+- Fewer, cheaper tasks: small review findings go on one weekly cleanup issue
+  per line; a small line may be covered by another line's PO; a current owner
+  decision may let low-risk small tasks run on a cheaper model or effort
+  (`Model exception:` in the brief).
 
 ## License
 

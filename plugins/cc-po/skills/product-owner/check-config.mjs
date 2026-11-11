@@ -26,8 +26,8 @@ export const KNOWN = new Set([
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
   'promotion_reviews', 'shared_core_review', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
-  'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_hours',
-  'compact_notice_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
+  'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
+  'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -282,7 +282,7 @@ export function checkConfig(text, { root } = {}) {
   }
   // The gatekeeper's numbers go into a scheduled task's prompt, so each must
   // be an integer in a range the task can use; a note may follow the number.
-  for (const [key, min, max] of [['gatekeeper_active_minutes', 5, 1440], ['gatekeeper_quiet_hours', 1, 72], ['compact_notice_tokens', 50000, 2000000]]) {
+  for (const [key, min, max] of [['gatekeeper_active_minutes', 5, 1440], ['gatekeeper_quiet_minutes', 30, 1440], ['gatekeeper_quiet_hours', 1, 72], ['compact_notice_tokens', 50000, 2000000]]) {
     const v = values[key];
     if (v === undefined) continue;
     const n = /^\d+(?![\w.-])/.test(v) ? parseInt(v, 10) : NaN;
@@ -290,7 +290,14 @@ export function checkConfig(text, { root } = {}) {
   }
   // gatekeeper_quiet_hours is no longer used (2.8.0): accepted for one version.
   if (values.gatekeeper_quiet_hours !== undefined) {
-    warnings.push('gatekeeper_quiet_hours is no longer used: the gatekeeper wakes a quiet PO after gatekeeper_active_minutes; remove it');
+    warnings.push('gatekeeper_quiet_hours is no longer used: the gatekeeper wakes a quiet PO after gatekeeper_quiet_minutes; remove it');
+  }
+  // po_handoff_tokens is the context size at which a PO hands its line to a
+  // fresh PO session: an integer, or none for no size trigger.
+  const handoffTokens = values.po_handoff_tokens;
+  if (handoffTokens !== undefined && !isNone(handoffTokens)) {
+    const n = /^\d+(?![\w.-])/.test(handoffTokens) ? parseInt(handoffTokens, 10) : NaN;
+    if (!(n >= 50000 && n <= 2000000)) errors.push('po_handoff_tokens must start with an integer from 50000 to 2000000, or be none');
   }
   if (values.po_handoff !== undefined && !/^(on|off)(?![\w-])/i.test(values.po_handoff)) {
     errors.push('po_handoff must be on or off');
@@ -345,11 +352,10 @@ export function checkConfig(text, { root } = {}) {
     }
   });
 
-  // The coordinator line's PO is woken for any pull request, so its label
-  // must be a line of this repository.
-  const coordinator = values.coordinator_line;
-  if (coordinator !== undefined && !isNone(coordinator) && !labels.has(coordinator.replace(/`/g, '').split(/\s/)[0])) {
-    errors.push('coordinator_line must be none or a label in the Lines table');
+  // coordinator_line is no longer used (2.10.0): the gatekeeper counts only a
+  // PO's own line's pull requests. Accepted for one version.
+  if (values.coordinator_line !== undefined && !isNone(values.coordinator_line)) {
+    warnings.push('coordinator_line is no longer used: the gatekeeper counts only pull requests labelled with its own line; remove it');
   }
 
   // The sprint review runs at a sprint's end, audits each line's scope and
