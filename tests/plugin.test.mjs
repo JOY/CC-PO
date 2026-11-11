@@ -606,7 +606,7 @@ test('the gatekeeper wakes a PO that is not running when any of three reasons ho
   assert.match(flatten(gatekeeper()), /may show such a prompt in the first runs\. The owner approves each once \("always allow"\)\. After creating the task, the PO checks the first run with `list_task_runs` and `list_events`/);
   const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
   assert.match(skill, /It keeps no state and writes no file/);
-  assert.match(skill, /\(c\) the PO has been quiet: its `lastActivityAt` is `gatekeeper_active_minutes` \(60 by default; JOY set 30 for DOS\.AI\) or more before now, whether or not its line has work in flight/);
+  assert.match(skill, /\(c\) the PO has been quiet: its `lastActivityAt` is `gatekeeper_active_minutes` \(60 by default\) or more before now, whether or not its line has work in flight/);
   assert.match(skill, /`gatekeeper_quiet_hours` and `coordinator_line` are no longer used/);
   assert.doesNotMatch(skill, /rewrites its one state file|one state file in `po_check_in_dir`/);
   const rules = read('plugins/cc-po/rules/AGENTS.md');
@@ -949,7 +949,7 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
       assert.match(m.msg, /Ready PRs of your line: none\. /);
     }
 
-    // A config that sets activeMinutes to 30 (the DOS.AI value) wakes the Meetings PO at 05:25 (35 minutes quiet).
+    // A config that sets activeMinutes to 30 (a shorter window) wakes the Meetings PO at 05:25 (35 minutes quiet).
     const tunedPath = join(dir, 'tuned.json');
     writeFileSync(tunedPath, JSON.stringify({ ...bare, activeMinutes: 30 }));
     sent = [];
@@ -1021,7 +1021,7 @@ test('the PO is one long-lived session, keeps its context lean, archives finishe
   assert.match(skill, /it follows the same comment rules as `effort-exception:`/);
   assert.match(skill, /`get_session` shows that the session is not running and is the retired PO/);
   assert.match(skill, /`Model exception: <model>, <effort>, <decision id>`/);
-  assert.match(skill, /never above `agent_model` and `agent_effort`, never for a session that changes code, documentation, pricing or configuration unless the decision names that kind of work, and never for security, money, migration, credential or Production work/);
+  assert.match(skill, /never above `agent_model` and `agent_effort`, never for a session that changes code, documentation, pricing or configuration, and never for security, money, migration, credential or Production work/);
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
   assert.match(schema, /\| `po_handoff_tokens` \| none \| Released in 2\.10\.0 and withdrawn in 2\.11\.0/);
   assert.match(schema, /\| `compact_notice_tokens` \| none \| No longer used since 2\.11\.0/);

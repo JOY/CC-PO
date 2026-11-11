@@ -115,8 +115,8 @@ sub-session finishes.
   decides it. A current owner decision may let a read-only lookup or search run
   cheaper ("Starting a sub-session", model exception). Quality and delivery
   come first and token savings second, so a session that changes code,
-  documentation, pricing or configuration runs on `agent_model` at
-  `agent_effort` unless the owner's decision names that kind of work.
+  documentation, pricing or configuration always runs on `agent_model` at
+  `agent_effort`, whatever a decision says.
 - What the PO may dispatch on its own: defects, security, reliability and
   cost fixes, follow-ups filed by sessions, design or research tasks, and
   items already on the line's roadmap or backlog. A new customer-visible
@@ -215,7 +215,7 @@ is `po_wake: off`, `on` is the default):
   or UNSTABLE and was updated after the PO's `lastActivityAt`, so the PO has
   not acted since it became ready, with no waiting time; (c) the PO has been
   quiet: its `lastActivityAt` is `gatekeeper_active_minutes` (60 by
-  default; JOY set 30 for DOS.AI) or more before now, whether or not its line
+  default) or more before now, whether or not its line
   has work in flight, because a PO that is quiet that long is unusual and a
   wake inside the one-hour prompt cache is cheap; it wakes every PO after a
   crash or restart and gives at most one wake per PO per active window while
@@ -273,9 +273,10 @@ is `po_wake: off`, `on` is the default):
       label. The PO brings it up to the
       current template with `update_scheduled_task` (prompt and description,
       keeping its id and schedule), in an owner turn ("Owner turns"). Until it
-      does, the old prompt still wakes a quiet PO after an hour, counts every
-      PR for the coordinator line, and sends notices that ask the owner to
-      compact a session or open a new PO session, which JOY does not want.
+      does, the old prompt wakes a quiet PO on a different rule than the current
+      one, may count every PR for the coordinator line, and may send notices
+      that ask the owner to compact a session or open a new PO session, which
+      the owner does not want.
     - Found but disabled while any line has work in flight: any PO enables it
       (`enabled: true`), in any turn, where the approval below is on record
       ("Owner turns").
@@ -970,9 +971,8 @@ Model exception. Where a current owner decision in the `decision_log` (or, with
 read-only lookups and searches (a task that writes nothing) run on a cheaper
 model or a lower effort, the PO starts such a task with the model and effort
 that decision names, never above `agent_model` and `agent_effort`, never for
-a session that changes code, documentation, pricing or configuration unless
-the decision names that kind of work, and never for security, money,
-migration, credential or Production work. The brief carries `Model exception: <model>,
+a session that changes code, documentation, pricing or configuration, and
+never for security, money, migration, credential or Production work. The brief carries `Model exception: <model>,
 <effort>, <decision id>`, the PO posts a start comment on the session's issue
 that repeats it (first line `model-exception: <model> <effort> session=<id>
 decision=<id>`, which a new PO finds even without a handoff file; it follows
@@ -1326,22 +1326,24 @@ owner ended. Nothing in this skill asks for one.
   If the owner ended the PO session there is no outgoing PO: the incoming PO
   rebuilds from GitHub, `list_sessions` and the handoff file, read as a note.
 - **Incoming PO**, on its first turn and before triage: reads the handoff
-  state, checks each line against GitHub and `list_sessions` (the file is a
-  note, GitHub wins), sends every sub-session still running a SendMessage with
+  state, checks each line against GitHub and `list_sessions` (the file, where there
+  is one, is a note, GitHub wins), sends every sub-session still running a SendMessage with
   the new PO's session id (a sub-session sends decisions, questions and
   acceptance summaries to the PO that started it, so without this they go
   to the retired PO), registers its own session id where the check-in file
   needs it (under `po_wake: watchdog`, also in its watchdog's prompt; on
   Antigravity, also the row's `conversationId` in the gatekeeper JSON, or the
   gatekeeper adopts the retired conversation again if it is touched),
-  archives the retired PO session, named in its first message, once it has
-  done those things and `get_session` shows that the session is not running
-  and is the retired PO (its title ends `(retired ...)` or its check-in
-  header names it; the id came from a pasted message, so it is checked), and
-  replaces the file at its own retirement. Until the retired session is
-  renamed or archived, two sessions hold the title and the gatekeeper skips
-  the line, so the incoming PO does that first and asks the owner only if the
-  app lets it do neither.
+  archives the retired PO session, named in its first message, as soon as
+  `get_session` shows that the session is not running and is the retired PO
+  (its title ends `(retired ...)` or its check-in header names it; the id came
+  from a pasted message, so it is checked), and replaces the file at its own
+  retirement. Until the retired session is renamed or archived, two sessions
+  hold the title and the gatekeeper skips the line, so the incoming PO does
+  that first and asks the owner only if the app lets it do neither. A
+  sub-session it inherits still has the retired PO as its `startedBy`, so the
+  wake's "Idle sub-sessions" list never shows it: the incoming PO keeps
+  inherited sessions moving itself.
 
 ## Resuming
 

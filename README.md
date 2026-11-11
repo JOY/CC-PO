@@ -493,9 +493,11 @@ update the gatekeeper task with `update_scheduled_task` from the new
 
 ### Upgrading to 2.11.0
 
-Config edit: remove `po_handoff_tokens` and `compact_notice_tokens` if you set
-them (the checker warns while they are present). On Antigravity, re-copy
-`plugins/cc-po` to `~/.gemini/config/plugins/cc-po` and restart Antigravity.
+Config edit: remove `po_handoff_tokens`, `compact_notice_tokens` and
+`gatekeeper_quiet_minutes` if you set them (the checker warns while they are
+present). On Antigravity, re-copy `plugins/cc-po` to
+`~/.gemini/config/plugins/cc-po`, restart Antigravity, and drop `quietMinutes`,
+`compactTokens` and `handoffTokens` from the gatekeeper JSON (they are ignored).
 Then ask a PO to update the gatekeeper task with `update_scheduled_task` from
 the new `gatekeeper-template.md` (a scheduled task does not read the config).
 This repository has no separate changelog file: these notes are the release
@@ -523,9 +525,8 @@ notes.
   is unchanged.
 - The Model exception is narrowed: only a read-only lookup or search may run
   on a cheaper model or lower effort under an owner decision, never a session
-  that changes code, documentation, pricing or configuration unless the
-  decision names that kind of work (quality and delivery first, token savings
-  second).
+  that changes code, documentation, pricing or configuration (quality and
+  delivery first, token savings second).
 - An upgraded PO ignores a "Handoff notice" or "Context notice" that an older
   gatekeeper task still sends, and rewrites any step of its check-in file that
   asks for a context-size handoff, until a PO updates the gatekeeper task.
