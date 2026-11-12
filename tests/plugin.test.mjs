@@ -723,8 +723,8 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.12.1 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.12.1');
+test('the version is 2.12.2 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.12.2');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -1173,4 +1173,47 @@ test('the owner_name value counts as naming the owner in a pr_monitor or sidebar
   // An owner_name with regex characters is matched literally.
   assert.deepEqual(unicode('J.O. (Joy)', 'auto_fix (J.O. (Joy), 2026-11-12, sessions in auto mode)').warnings, []);
   assert.match(unicode('J.O.', 'auto_fix (JxOx, 2026-11-12, sessions in auto mode)').warnings.join('\n'), naming);
+});
+
+// 2.12.2: the restart check has a command for every system the desktop app (or a scheduled task) can run on, chosen by
+// platform, and the POSIX ones are read-only, print the empty second line instead of failing when the app is not found,
+// and parse as shell.
+test('the gatekeeper and watchdog restart check covers Windows, macOS and Linux and is chosen by platform', () => {
+  for (const path of ['plugins/cc-po/skills/product-owner/gatekeeper-template.md', 'plugins/cc-po/skills/product-owner/watchdog-template.md']) {
+    const text = read(path);
+    const flat = flatten(text);
+    // Windows stays as it was.
+    assert.match(text, /- Windows \(PowerShell\): `\(Get-CimInstance Win32_OperatingSystem\)\.LastBootUpTime\.ToUniversalTime\(\)\.ToString\('o'\); \(Get-Process -Name claude -ErrorAction SilentlyContinue \| Sort-Object StartTime \| Select-Object -First 1\)\.StartTime\.ToUniversalTime\(\)\.ToString\('o'\)`/);
+    const mac = text.match(/^- macOS \(zsh or bash\): `([^`\n]+)`$/m);
+    const linux = text.match(/^- Linux \(bash\): `([^`\n]+)`$/m);
+    assert.ok(mac, `${path}: macOS command`);
+    assert.ok(linux, `${path}: Linux command`);
+    assert.match(mac[1], /sysctl -n kern\.boottime/);
+    assert.match(mac[1], /pgrep -ox Claude/);
+    assert.match(linux[1], /\/proc\/stat/);
+    assert.match(linux[1], /pgrep -ox claude/);
+    // ps prints local time without a zone: it is read as local time (no -u) into epoch seconds, then shown as UTC.
+    assert.ok(linux[1].includes('date -u -d "@$(date -d "$(ps -o lstart= -p "$p")" +%s)"'));
+    for (const command of [mac[1], linux[1]]) {
+      // Read-only: no write, kill or network word, and a missing app process is an empty line, not a failure.
+      assert.doesNotMatch(command, /\b(rm|kill|curl|wget|tee|mv|cp|chmod|sudo)\b|>>?\s*\S/);
+      assert.match(command, /if \[ -n "\$p" \]; then .*; else echo; fi$/);
+      assert.doesNotMatch(command, /"\$p"\)" && date/);
+    }
+    assert.match(flat, /Choose the command by the system the desktop app runs on/);
+    assert.match(flat, /`uname -s` prints `Darwin` on macOS and `Linux` on Linux, and Windows has no `uname`/);
+    assert.match(flat, /A task made on one machine is never copied to another/);
+    // A syntax check of the POSIX commands where bash exists (CI, macOS, Git Bash).
+    const probe = spawnSync('bash', ['-c', 'true']);
+    if (probe.status === 0) {
+      for (const command of [mac[1], linux[1]]) {
+        const syntax = spawnSync('bash', ['-n', '-c', command], { encoding: 'utf8' });
+        assert.equal(syntax.status, 0, syntax.stderr);
+      }
+    }
+  }
+  const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
+  assert.match(readme, /### Upgrading to 2\.12\.2/);
+  assert.match(readme, /Windows, macOS and Linux commands are in the template/);
+  assert.match(readme, /The `PowerShell\(\.\.\.\)` entries are for Windows only/);
 });

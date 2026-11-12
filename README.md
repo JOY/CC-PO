@@ -180,7 +180,8 @@ method. For squash merges:
 }
 ```
 
-`--match-head-commit` limits a merge to the head the PO accepted. The `ask`
+The `PowerShell(...)` entries are for Windows only: on macOS and Linux a
+session runs Bash, so leave them out there. `--match-head-commit` limits a merge to the head the PO accepted. The `ask`
 entries win over `allow`, so a merge-commit merge (often the Production
 path), a rebase, or `--admin` still asks the person. GitHub still enforces
 your required checks and review rules; the rule only lets the command run.
@@ -359,7 +360,7 @@ No config change is needed.
   a restart left the PO stopped for up to `check_in_minutes` plus 10 minutes
   and one more interval, because its last activity still looked recent. Each
   run now reads the boot and app start times with one read-only command
-  (Windows and macOS commands are in the template) and compares them with
+  (Windows, macOS and Linux commands are in the template) and compares them with
   the PO's last activity.
 - It runs every 15 minutes instead of 30, at `<m>,<m+15>,<m+30>,<m+45>`.
 - Its wake message also asks the PO to recreate pending one-shots and to
@@ -589,6 +590,21 @@ value as a whole word, besides the word `owner` or a decision id), so a note
 such as `auto_fix (Sam, 2026-11-12, sessions in auto mode)` no longer warns
 when `owner_name` is `Sam`. Copy the checker and schema into a repository that
 vendors them.
+
+### Upgrading to 2.12.2
+
+No config change. The gatekeeper and watchdog templates' restart check now has
+a Linux command beside the Windows and macOS ones, and a paragraph on choosing
+the command by system: `uname -s` tells macOS (`Darwin`) from Linux, Windows
+uses the PowerShell command, and a task made on one machine is created again
+on another from the template, never copied (its command and check-in paths
+belong to the machine). The macOS command now prints an empty second line and
+ends with status 0 when the Claude app's process is not found (it used to end
+with status 1, which a gatekeeper run reads as a failed check and so ignores
+the boot time). The Windows command is unchanged. The Antigravity sidecar
+(`agy-gatekeeper.mjs`) still reads its restart times with Windows PowerShell
+only. Moving a PO line to another machine is a repository runbook's job (for
+DOS.AI, `docs/runbooks/po-machine-migration.md`).
 
 ## License
 
