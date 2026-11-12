@@ -69,7 +69,7 @@ command per system:
 
 - Windows (PowerShell): `(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'); (Get-Process -Name claude -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1).StartTime.ToUniversalTime().ToString('o')`
 - macOS (zsh or bash): `date -u -r "$(sysctl -n kern.boottime | sed -E 's/^\{ sec = ([0-9]+).*/\1/')" +%Y-%m-%dT%H:%M:%SZ; p="$(pgrep -ox Claude)"; if [ -n "$p" ]; then date -u -r "$(date -j -f '%a %b %e %T %Y' "$(ps -o lstart= -p "$p")" +%s)" +%Y-%m-%dT%H:%M:%SZ; else echo; fi`
-- Linux (bash): `date -u -d "@$(awk '/^btime/ {print $2}' /proc/stat)" +%Y-%m-%dT%H:%M:%SZ; p="$(pgrep -ox claude)"; if [ -n "$p" ]; then date -u -d "$(ps -o lstart= -p "$p")" +%Y-%m-%dT%H:%M:%SZ; else echo; fi`
+- Linux (bash): `date -u -d "@$(awk '/^btime/ {print $2}' /proc/stat)" +%Y-%m-%dT%H:%M:%SZ; p="$(pgrep -ox claude)"; if [ -n "$p" ]; then date -u -d "@$(date -d "$(ps -o lstart= -p "$p")" +%s)" +%Y-%m-%dT%H:%M:%SZ; else echo; fi`
 
 All three only read; none changes anything. On macOS and Linux a missing app
 process prints an empty second line and the command still ends with status 0.

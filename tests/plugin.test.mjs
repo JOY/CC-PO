@@ -1192,6 +1192,8 @@ test('the gatekeeper and watchdog restart check covers Windows, macOS and Linux 
     assert.match(mac[1], /pgrep -ox Claude/);
     assert.match(linux[1], /\/proc\/stat/);
     assert.match(linux[1], /pgrep -ox claude/);
+    // ps prints local time without a zone: it is read as local time (no -u) into epoch seconds, then shown as UTC.
+    assert.ok(linux[1].includes('date -u -d "@$(date -d "$(ps -o lstart= -p "$p")" +%s)"'));
     for (const command of [mac[1], linux[1]]) {
       // Read-only: no write, kill or network word, and a missing app process is an empty line, not a failure.
       assert.doesNotMatch(command, /\b(rm|kill|curl|wget|tee|mv|cp|chmod|sudo)\b|>>?\s*\S/);
