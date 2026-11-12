@@ -41,9 +41,22 @@ second line is empty when the app's process is not found). App scheduled
 tasks run where the desktop app runs, so there is one command per system:
 
 - Windows (PowerShell): `(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o'); (Get-Process -Name claude -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1).StartTime.ToUniversalTime().ToString('o')`
-- macOS (zsh or bash): `date -u -r "$(sysctl -n kern.boottime | sed -E 's/^\{ sec = ([0-9]+).*/\1/')" +%Y-%m-%dT%H:%M:%SZ; p="$(pgrep -ox Claude)" && date -u -r "$(date -j -f '%a %b %e %T %Y' "$(ps -o lstart= -p "$p")" +%s)" +%Y-%m-%dT%H:%M:%SZ`
+- macOS (zsh or bash): `date -u -r "$(sysctl -n kern.boottime | sed -E 's/^\{ sec = ([0-9]+).*/\1/')" +%Y-%m-%dT%H:%M:%SZ; p="$(pgrep -ox Claude)"; if [ -n "$p" ]; then date -u -r "$(date -j -f '%a %b %e %T %Y' "$(ps -o lstart= -p "$p")" +%s)" +%Y-%m-%dT%H:%M:%SZ; else echo; fi`
+- Linux (bash): `date -u -d "@$(awk '/^btime/ {print $2}' /proc/stat)" +%Y-%m-%dT%H:%M:%SZ; p="$(pgrep -ox claude)"; if [ -n "$p" ]; then date -u -d "$(ps -o lstart= -p "$p")" +%Y-%m-%dT%H:%M:%SZ; else echo; fi`
 
-Both only read; neither changes anything. The PO runs the command once
+All three only read; none changes anything. On macOS and Linux a missing app
+process prints an empty second line and the command still ends with status 0.
+
+Choose the command by the system the desktop app runs on, which is where the
+task runs: `uname -s` prints `Darwin` on macOS and `Linux` on Linux, and
+Windows has no `uname` (use the PowerShell command there). The PO writes only
+that one command into `<restart check>`. A task made on one machine is never
+copied to another: its command and its check-in paths belong to that machine,
+so the PO on a new machine creates the task again from this template with its
+own command. The Linux command takes the oldest process named `claude`, which
+is the app only when no older terminal `claude` session is running (there is
+no desktop app for Linux, so read its second time as a hint); on Windows and
+macOS the process is the app itself. The PO runs the command once
 before creating the task and checks that it prints a boot time, so a run
 never meets a command its machine lacks.
 
