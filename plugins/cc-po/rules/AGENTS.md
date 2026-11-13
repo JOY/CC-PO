@@ -18,7 +18,7 @@ unchanged.
 | `SendMessage`, `mcp__ccd_session_mgmt__send_message` (`to`: a session id) | Use the `send_message` tool (`Recipient`: `<conversationId>`) between a PO and its in-process sub-session subagents (sending a message to an idle or restart-stopped subagent also wakes and resumes it in place). Across separate top-level PO conversations, try `send_message` first and fall back to `agentapi send-message "<conversationId>" "<message>"` via `run_command` if refused. |
 | `list_sessions` (`linked: true`), `mcp__ccd_session_mgmt__get_session` | For sub-sessions, call `manage_subagents` (`Action: "list"`) to read each direct subagent's `conversationId` and live state, and read `<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl` when inspecting a subagent's recent turns. Record each sub-session's `conversationId` in its issue's `claim:` comment and in the PO's check-in or handoff file so it survives restarts. For top-level PO conversations, no global list exists; inspect a known id with `agentapi get-conversation-metadata <conversationId>` (carries no `lastActivityAt`). |
 | `mcp__ccd_session_mgmt__archive_session` | Sub-session subagents live inside the PO's Subagents pane rather than the left sidebar, so finished subagents need no archive call (record completion in the check-in file; use `manage_subagents` with `Action: "kill"` only to terminate a stuck running subagent). Top-level conversations have no archive API; the owner archives retired PO conversations from the sidebar. |
-| `set_session_model`, `set_session_effort`, `agent_model`, `agent_effort`, `subagent_effort` | Running conversations and subagents keep their initial model, and Antigravity has no session effort API. Skip session effort reconciliation and effort exceptions, and note that once in the PO's digest. Keep `-c model_reasoning_effort=<subagent_effort>` on `codex review` when `local_reviews` uses Codex CLI. |
+| `set_session_model`, `set_session_effort`, `agent_model`, `agent_effort`, `subagent_effort` | Running conversations and subagents keep their initial model, and Antigravity has no session effort API. Skip session effort reconciliation and effort exceptions, and note that once in the PO's digest. Which model a sub-session gets, Orchestrator included: "Models and Orchestrator" below. Keep `-c model_reasoning_effort=<subagent_effort>` on `codex review` when `local_reviews` uses Codex CLI. |
 | `bind_pr`, `get_status`, `set_monitor` (`pr_monitor`), `create_group`, `move_sessions` (`sidebar_groups`) | Antigravity has no PR bar and no sidebar groups: ignore `pr_monitor` and `sidebar_groups`. Sub-sessions check a PR's CI once per resume with `gh pr checks` (a background `--watch`, see below, when it needs waiting) and the PO nudges them as before. |
 | The Agent tool (in-process subagent) | `invoke_subagent`: `TypeName: "research"` for read-only work (such as the sprint review's audit or a fresh-context review), `TypeName: "self"` for work that writes, `Model: "inherit"`. |
 | `AskUserQuestion` | `ask_question`. |
@@ -27,6 +27,46 @@ unchanged.
 | Watching CI (Monitor, `gh pr checks --watch`) | `run_command` in the background (short `WaitMsBeforeAsync`, e.g. `500`, `IsDaemon: false`): Antigravity wakes the conversation when the command finishes. Never poll in a loop. |
 | Renaming the session to `<Line> Product Owner` | A running conversation cannot rename itself (unless started via `agentapi new-conversation --title="<Line> Product Owner"`). State `<Line> Product Owner` in `claim:` comments, the check-in file and the first line of each report. |
 | "The owner's next desktop turn" | The owner's next message in the PO's conversation. |
+
+## Models and Orchestrator
+
+- **Who picks the model.** The owner picks a conversation's model in the
+  app's model picker, and a running conversation and its subagents keep it.
+  `invoke_subagent` can pin only `flash_lite`, `flash` or `pro`; with
+  `Model: "inherit"` a subagent runs on the PO's own model. So on Antigravity
+  `agent_model` is one of those three or the PO's own model. When it is
+  neither (a Claude id such as `claude-sonnet-5-5` while the PO runs on
+  Gemini, or the reverse), the PO starts sub-sessions with `inherit` and
+  reports the mismatch once in its digest, as for a capped start. It never
+  asks the owner to switch models in the middle of a task.
+- **Orchestrator.** The picker's `Orchestrator (Carbon)` (model id
+  `gemini-pro-orchestrator`) and `Orchestrator (Argon)` (model id
+  `gemini-pro-orchestrator-argon`) are each one model choice: Gemini 4 Carbon
+  (or Argon) leads, may hand routine steps (edits, dependency changes, test
+  runs) to Gemini 4 Hydrogen inside the same conversation, and takes hard
+  steps back. A PO running on Orchestrator needs nothing more: its
+  sub-sessions inherit it, so each one routes its own steps. The PO does not
+  imitate the routing by pinning `flash` or `flash_lite` for tasks it judges
+  simple: a task that changes anything stays on `agent_model`, and the only
+  cheaper starts remain the read-only lookups a `Model exception` allows.
+  `agent_model: gemini-pro-orchestrator` means the PO runs on Orchestrator
+  (Carbon) and its sub-sessions inherit it. For the rule that `agent_model`
+  is not higher than the PO's model, Orchestrator counts as its lead model.
+- **Work the config ties to a named model.** Where the config or the
+  repository's agent instructions require a named model for some work (for
+  example a security review on a stronger model), a PO on another model,
+  Orchestrator included, does not present that work as done. It may run the
+  review on the model it has, writes in the PR which model ran it, and treats
+  the review on the named model as still owed: from a session on that model,
+  or by the owner's decision to accept the substitute. Orchestrator counts as
+  the named model only when the config names Orchestrator, because it may
+  hand steps of the review to Hydrogen.
+- **Quota.** Orchestrator spends the Gemini quota of the models it routes
+  to. When a model's quota is used up (the picker's `View Usage` shows 0%),
+  starts and turns on it fail: the PO says once in its digest which work is
+  stopped and when the quota resets, never retries in a loop and never moves
+  the work to another model on its own; the owner picks another model or
+  waits.
 
 ## Commands and permissions
 

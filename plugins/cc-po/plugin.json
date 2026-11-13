@@ -1,7 +1,7 @@
 {
   "name": "cc-po",
   "displayName": "CC Product Owner",
-  "version": "2.12.2",
+  "version": "2.13.0",
   "description": "Product Owner workflow: one PO per product line triages a GitHub Project, starts sub-sessions, accepts their PRs (product-owner); GitHub issue claims (task-claim); repository config (setup).",
   "author": {
     "name": "JOY"
