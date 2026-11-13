@@ -31,42 +31,55 @@ unchanged.
 ## Models and Orchestrator
 
 - **Who picks the model.** The owner picks a conversation's model in the
-  app's model picker, and a running conversation and its subagents keep it.
-  `invoke_subagent` can pin only `flash_lite`, `flash` or `pro`; with
-  `Model: "inherit"` a subagent runs on the PO's own model. So on Antigravity
-  `agent_model` is one of those three or the PO's own model. When it is
-  neither (a Claude id such as `claude-sonnet-5-5` while the PO runs on
-  Gemini, or the reverse), the PO starts sub-sessions with `inherit` and
-  reports the mismatch once in its digest, as for a capped start. It never
-  asks the owner to switch models in the middle of a task.
+  app's model picker, and a running conversation and its subagents keep it;
+  no config value can change it. `invoke_subagent` can pin only
+  `flash_lite`, `flash` or `pro`, so a sub-session runs on that model when
+  `agent_model` names one of them, and on the PO's own model (`Model:
+  "inherit"`) otherwise. When `agent_model` names a model other than those
+  three and the PO's own (a Claude id such as `claude-sonnet-5-5` while the
+  PO runs on Gemini, or `claude-sonnet-5-5` while it runs on Claude Opus),
+  the PO starts sub-sessions with `inherit` and reports the mismatch, higher
+  or lower, once in its digest. It does not ask the owner to switch models in
+  the middle of a task.
 - **Orchestrator.** The picker's `Orchestrator (Carbon)` (model id
   `gemini-pro-orchestrator`) and `Orchestrator (Argon)` (model id
   `gemini-pro-orchestrator-argon`) are each one model choice: Gemini 4 Carbon
-  (or Argon) leads, may hand routine steps (edits, dependency changes, test
-  runs) to Gemini 4 Hydrogen inside the same conversation, and takes hard
-  steps back. A PO running on Orchestrator needs nothing more: its
-  sub-sessions inherit it, so each one routes its own steps. The PO does not
-  imitate the routing by pinning `flash` or `flash_lite` for tasks it judges
-  simple: a task that changes anything stays on `agent_model`, and the only
-  cheaper starts remain the read-only lookups a `Model exception` allows.
-  `agent_model: gemini-pro-orchestrator` means the PO runs on Orchestrator
-  (Carbon) and its sub-sessions inherit it. For the rule that `agent_model`
-  is not higher than the PO's model, Orchestrator counts as its lead model.
+  (or Argon) leads and may hand routine steps to Gemini 4 Hydrogen inside the
+  same conversation. A PO the owner runs on Orchestrator needs nothing more:
+  its sub-sessions inherit it, so each one routes its own steps. The PO does
+  not imitate the routing by pinning `flash` or `flash_lite` for tasks it
+  judges simple: a task that changes anything stays on `agent_model`. An
+  `agent_model` naming either Orchestrator id is met only when the owner runs
+  the PO on that choice; otherwise it is the mismatch case above. How
+  Orchestrator, Carbon, Argon and `pro` rank against each other for the rule
+  that `agent_model` is not higher than the PO's model is the owner's
+  decision, recorded in the config's note; without one, the PO treats any
+  difference as a mismatch and reports it.
+- **Model exceptions.** A read-only lookup the `product-owner` skill lets
+  run cheaper names `flash_lite` or `flash`, the only cheaper models
+  `invoke_subagent` can pin. A subagent cannot be moved to another model, so
+  when such a task proves to need more, the PO ends it (`manage_subagents`,
+  `Action: "kill"`), posts `model-exception: ended`, and starts a new
+  sub-session on `agent_model` (or `inherit`) from the last checkpoint.
 - **Work the config ties to a named model.** Where the config or the
   repository's agent instructions require a named model for some work (for
   example a security review on a stronger model), a PO on another model,
-  Orchestrator included, does not present that work as done. It may run the
-  review on the model it has, writes in the PR which model ran it, and treats
-  the review on the named model as still owed: from a session on that model,
-  or by the owner's decision to accept the substitute. Orchestrator counts as
-  the named model only when the config names Orchestrator, because it may
-  hand steps of the review to Hydrogen.
-- **Quota.** Orchestrator spends the Gemini quota of the models it routes
-  to. When a model's quota is used up (the picker's `View Usage` shows 0%),
-  starts and turns on it fail: the PO says once in its digest which work is
-  stopped and when the quota resets, never retries in a loop and never moves
-  the work to another model on its own; the owner picks another model or
-  waits.
+  Orchestrator included, does not count that work as done. It may run the
+  review on the model it has, still independent (a fresh context, at least
+  as capable as the PO's model, that did not write the change), and writes in
+  the PR which model ran it. Until the review runs on the named model or the
+  owner accepts the substitute for that PR, the gate it belongs to is not
+  passed and the PR does not merge. Orchestrator counts as the named model
+  only when the config names Orchestrator, because it may hand steps of the
+  review to Hydrogen.
+- **Quota.** Each model has its own quota (Orchestrator's included), shown
+  under `View Usage` in the picker. A start or turn on a model whose quota is
+  used up fails. That failure is not the model error the skill's
+  retry-once-without-`model` rule covers: the PO does not retry with
+  `inherit` or another model, never retries in a loop and never moves the
+  work to another model on its own. It says once in its digest which work is
+  stopped and when the quota resets (if the app shows it); the owner picks
+  another model or waits.
 
 ## Commands and permissions
 

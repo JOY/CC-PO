@@ -1224,11 +1224,19 @@ test('the gatekeeper and watchdog restart check covers Windows, macOS and Linux 
 // routing with cheaper starts, and work pinned to a named model is not counted done on another one.
 test('the Antigravity rules cover Orchestrator, inherited models, named-model work and quota', () => {
   const rules = flatten(read('plugins/cc-po/rules/AGENTS.md').replace(/\r\n/g, '\n'));
+  const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(rules, /## Models and Orchestrator/);
-  assert.match(rules, /`invoke_subagent` can pin only `flash_lite`, `flash` or `pro`; with `Model: "inherit"` a subagent runs on the PO's own model/);
+  assert.match(rules, /`invoke_subagent` can pin only `flash_lite`, `flash` or `pro`, so a sub-session runs on that model when `agent_model` names one of them, and on the PO's own model \(`Model: "inherit"`\) otherwise/);
+  assert.match(rules, /reports the mismatch, higher or lower, once in its digest/);
   assert.match(rules, /`Orchestrator \(Carbon\)` \(model id `gemini-pro-orchestrator`\) and `Orchestrator \(Argon\)` \(model id `gemini-pro-orchestrator-argon`\)/);
   assert.match(rules, /The PO does not imitate the routing by pinning `flash` or `flash_lite` for tasks it judges simple: a task that changes anything stays on `agent_model`/);
+  assert.match(rules, /is met only when the owner runs the PO on that choice; otherwise it is the mismatch case above/);
+  assert.match(rules, /the PO ends it \(`manage_subagents`, `Action: "kill"`\), posts `model-exception: ended`/);
+  assert.match(rules, /the gate it belongs to is not passed and the PR does not merge/);
   assert.match(rules, /Orchestrator counts as the named model only when the config names Orchestrator/);
+  assert.match(rules, /That failure is not the model error the skill's retry-once-without-`model` rule covers/);
   assert.match(rules, /never retries in a loop and never moves the work to another model on its own/);
   assert.match(rules, /Which model a sub-session gets, Orchestrator included: "Models and Orchestrator" below/);
+  assert.match(readme, /Sub-sessions inherit the PO's model unless `agent_model` pins `flash_lite`, `flash` or `pro`/);
+  assert.match(readme, /the PR does not merge until that review runs on the named model or the owner accepts the substitute/);
 });
