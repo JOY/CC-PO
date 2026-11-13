@@ -107,7 +107,12 @@ What stays the same and what differs on Antigravity:
 - **Model, effort and shared gatekeeper.** Running conversations and
   subagents keep their initial model, and session effort reconciliation is
   skipped (Codex CLI reviews still receive
-  `-c model_reasoning_effort=<subagent_effort>`). Under `po_wake: gatekeeper`
+  `-c model_reasoning_effort=<subagent_effort>`). Sub-sessions inherit the
+  PO's model unless `agent_model` pins `flash_lite`, `flash` or `pro`, so a
+  PO the owner runs on `Orchestrator (Carbon)` or `Orchestrator (Argon)` gets
+  Orchestrator's own routing to Hydrogen in every sub-session; work the config ties to a named model (such as a
+  security review) is not counted done on another model ("Models and
+  Orchestrator" in `rules/AGENTS.md`). Under `po_wake: gatekeeper`
   (the default), each repository keeps one shared Antigravity scheduled
   automation (`<repo owner>-<repo>-po-gatekeeper`) running
   `skills/product-owner/agy-gatekeeper.mjs` every 30 minutes with zero model
@@ -639,6 +644,35 @@ the boot time). The Windows command is unchanged. The Antigravity sidecar
 (`agy-gatekeeper.mjs`) still reads its restart times with Windows PowerShell
 only. Moving a PO line to another machine is a repository runbook's job (for
 DOS.AI, `docs/runbooks/po-machine-migration.md`).
+
+### Upgrading to 2.13.0
+
+No config change. Antigravity only: `rules/AGENTS.md` gains a "Models and
+Orchestrator" section. Antigravity's model picker now offers
+`Orchestrator (Carbon)` (model id `gemini-pro-orchestrator`) and
+`Orchestrator (Argon)` (`gemini-pro-orchestrator-argon`): one model choice
+that leads with Carbon (or Argon) and may hand routine steps to Hydrogen in
+the same conversation. The section says:
+
+- `invoke_subagent` pins only `flash_lite`, `flash` or `pro`; any other
+  `agent_model` runs sub-sessions on the PO's own model (`inherit`), and a
+  difference is reported once as a mismatch. A PO the owner runs on
+  Orchestrator needs nothing more.
+- The PO does not imitate Orchestrator's routing by starting "simple" tasks
+  on `flash`; a task that changes anything stays on `agent_model`.
+- Work the config or the repository's instructions tie to a named model
+  (such as a security review) is not counted done on another model,
+  Orchestrator included, unless the config names Orchestrator: the PR does
+  not merge until that review runs on the named model or the owner accepts
+  the substitute.
+- A cheaper read-only lookup uses `flash_lite` or `flash`; one that needs
+  more is ended and restarted, since a subagent cannot change model.
+- When a model's quota is used up, the PO reports it once and waits for the
+  owner; it never retries in a loop or moves the work to another model, and
+  the skill's retry-once-without-`model` rule does not apply.
+
+Copy the updated `plugins/cc-po` into the Antigravity plugin folder again
+and restart Antigravity.
 
 ## License
 

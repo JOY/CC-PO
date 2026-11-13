@@ -723,8 +723,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.12.2 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.12.2');
+test('the version is 2.13.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.13.0');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.13.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -733,6 +734,7 @@ test('the version is 2.12.2 and the README describes the gatekeeper and Antigrav
   assert.match(readme, /### Upgrading to 2\.10\.0/);
   assert.match(readme, /### Upgrading to 2\.11\.0/);
   assert.match(readme, /### Upgrading to 2\.12\.0/);
+  assert.match(readme, /### Upgrading to 2\.13\.0/);
   assert.match(readme, /The Claude app gatekeeper keeps no state file/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
@@ -1216,4 +1218,25 @@ test('the gatekeeper and watchdog restart check covers Windows, macOS and Linux 
   assert.match(readme, /### Upgrading to 2\.12\.2/);
   assert.match(readme, /Windows, macOS and Linux commands are in the template/);
   assert.match(readme, /The `PowerShell\(\.\.\.\)` entries are for Windows only/);
+});
+
+// 2.13.0: Antigravity's Orchestrator model choice. Sub-sessions inherit the PO's model, the PO does not imitate the
+// routing with cheaper starts, and work pinned to a named model is not counted done on another one.
+test('the Antigravity rules cover Orchestrator, inherited models, named-model work and quota', () => {
+  const rules = flatten(read('plugins/cc-po/rules/AGENTS.md').replace(/\r\n/g, '\n'));
+  const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
+  assert.match(rules, /## Models and Orchestrator/);
+  assert.match(rules, /`invoke_subagent` can pin only `flash_lite`, `flash` or `pro`, so a sub-session runs on that model when `agent_model` names one of them, and on the PO's own model \(`Model: "inherit"`\) otherwise/);
+  assert.match(rules, /reports the mismatch, higher or lower, once in its digest/);
+  assert.match(rules, /`Orchestrator \(Carbon\)` \(model id `gemini-pro-orchestrator`\) and `Orchestrator \(Argon\)` \(model id `gemini-pro-orchestrator-argon`\)/);
+  assert.match(rules, /The PO does not imitate the routing by pinning `flash` or `flash_lite` for tasks it judges simple: a task that changes anything stays on `agent_model`/);
+  assert.match(rules, /is met only when the owner runs the PO on that choice; otherwise it is the mismatch case above/);
+  assert.match(rules, /the PO ends it \(`manage_subagents`, `Action: "kill"`\), posts `model-exception: ended`/);
+  assert.match(rules, /the gate it belongs to is not passed and the PR does not merge/);
+  assert.match(rules, /Orchestrator counts as the named model only when the config names Orchestrator/);
+  assert.match(rules, /That failure is not the model error the skill's retry-once-without-`model` rule covers/);
+  assert.match(rules, /never retries in a loop and never moves the work to another model on its own/);
+  assert.match(rules, /Which model a sub-session gets, Orchestrator included: "Models and Orchestrator" below/);
+  assert.match(readme, /Sub-sessions inherit the PO's model unless `agent_model` pins `flash_lite`, `flash` or `pro`/);
+  assert.match(readme, /the PR does not merge until that review runs on the named model or the owner accepts the substitute/);
 });
