@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "cc-po-codex",
+  "version": "1.0.0",
+  "description": "Product Owner workflow for Codex. Assign issues to native subagents and coordinate reviewed GitHub pull requests.",
+  "author": {
+    "name": "JOY"
+  },
+  "homepage": "https://github.com/JOY/CC-PO",
+  "repository": "https://github.com/JOY/CC-PO",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "CC-PO for Codex"
+      }
+    }
+  }
+}
