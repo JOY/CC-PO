@@ -1,0 +1,20 @@
+{
+  "name": "cc-po-codex",
+  "interface": {
+    "displayName": "CC-PO for Codex"
+  },
+  "plugins": [
+    {
+      "name": "cc-po-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cc-po-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

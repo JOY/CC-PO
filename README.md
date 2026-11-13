@@ -115,6 +115,40 @@ What stays the same and what differs on Antigravity:
   repository that match a gatekeeper reason (`agentapi send-message`),
   enabled once by the owner in the Automations dashboard.
 
+### Codex
+
+Install **CC-PO for Codex** (`cc-po-codex`) from this repository's Codex
+marketplace. In a recent Codex CLI, register and install it with:
+
+```bash
+codex plugin marketplace add JOY/CC-PO
+codex plugin add cc-po-codex@cc-po-codex
+```
+
+The desktop app also discovers the marketplace when you open a checkout of
+this repository as a local project. In **Plugins**, choose **CC-PO for
+Codex** and install the package. Then start a new Codex chat in the
+repository you want the PO to manage, attach the plugin, and say:
+
+> You are the Product Owner for the Platform line. Use the product-owner
+> skill, read the board, and dispatch eligible issues to native subagents.
+
+The target repository needs an existing `docs/product-owner-config.md`,
+GitHub CLI access, and a local Codex environment that permits Git worktrees
+and native subagents. Use the configured board and claim protocol across
+all hosts. The Codex PO claims each issue, creates its own worktree for the
+issue, and delegates to a child agent visible in the PO chat. The child
+implements the issue and opens the draft PR. The PO verifies acceptance and
+GitHub gates, merges the accepted commit, and records the outcome.
+
+The Codex marketplace and skills are a separate opt-in package. The
+existing Claude Code and Antigravity installations use their original
+package. On Codex, follow-up continues while the PO is active, when the
+chat resumes, or via a supported and authorized heartbeat targeting that
+same PO chat. Claude and Antigravity wake-up settings require separate
+Codex setup. A missing child after a restart requires ownership
+reconciliation before the PO assigns a replacement.
+
 ## Set up a repository
 
 ```
