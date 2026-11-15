@@ -1286,11 +1286,12 @@ test('the claim lock and parallel PO keys are optional, known and checked', () =
   const bad = (extra) => checkConfig(minimal + extra).errors.join('\n');
   assert.match(bad('\n- claim_command: `node lock.mjs <n> --status in-progress`\n'), /claim_command needs the placeholder <status>/);
   assert.match(bad('\n- claim_command: `node lock.mjs <n> --status <status>`\n'), /claim_command needs the placeholder <claimant>/);
-  assert.match(bad('\n- pr_issue_keyword: Implements\n'), /pr_issue_keyword must be Refs, Closes, Fixes or Resolves/);
+  assert.match(bad('\n- pr_issue_keyword: Implements\n'), /pr_issue_keyword must be Refs, Closes, Fixes, Resolves or none/);
+  // none keeps the default, and a note may follow po_labels.
+  assert.deepEqual(checkConfig(minimal + '\n- pr_issue_keyword: none\n- promotion_po: none\n- po_labels: claude: po:claude, qwen: po:qwen (owner, 2026-11-16)\n'), { errors: [], warnings: [] });
   assert.match(bad('\n- po_labels: claude po:claude\n'), /po_labels pair 1 must read <tool>: <label>/);
   assert.match(bad('\n- po_labels: claude: po:a, claude: po:b\n'), /po_labels pair 2: its tool appears in an earlier pair/);
   assert.match(bad('\n- po_labels: claude: po:x, qwen: po:x\n'), /po_labels pair 2: its label appears in an earlier pair/);
-  assert.match(bad('\n- promotion_po: none\n'), /promotion_po must be any or a runtime name/);
   assert.match(bad('\n- promotion_po: Claude Code\n'), /promotion_po must be any or a runtime name/);
   // A promoter with no label pair would leave no PO of the listed runtimes promoting.
   assert.match(checkConfig(minimal + '\n- po_labels: claude: po:claude\n- promotion_po: qwen\n').warnings.join('\n'), /promotion_po names a runtime with no po_labels pair/);
@@ -1316,7 +1317,9 @@ test('task-claim follows the claim lock only when claim_command is set, and keep
   assert.match(claim, /Never put it in an environment variable that other sessions inherit/);
   assert.match(claim, /Never claim with bare label edits/);
   assert.match(claim, /with `--adopt`\. Never adopt another session's claim/);
-  assert.match(claim, /\*\*Take over\*\* only after a hand-over .* or on the owner's assignment/);
+  assert.match(claim, /\*\*Take over\*\* a lock another session still holds only after its handoff comment or on the owner's assignment/);
+  assert.match(claim, /the lock is free and the receiver claims normally/);
+  assert.match(claim, /A sub-session a PO started claims for itself, even where the host runs it as a subagent/);
   assert.match(claim, /Put `Claimant: <claimant>` on a line of its own in the PR description/);
   assert.match(claim, /then `ready` \(or `backlog` when blocked/);
   assert.match(claim, /Only when the config sets `pr_issue_keyword` to a closing keyword/);
@@ -1324,14 +1327,18 @@ test('task-claim follows the claim lock only when claim_command is set, and keep
 
 test('the PO honours po_labels, the claim lock and promotion_po only when the config sets them', () => {
   const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
-  assert.match(skill, /When the config sets `claim_command`, every claim this skill names .* goes through that command's lock .* without it, nothing changes/);
+  assert.match(skill, /When the config sets `claim_command`, every claim this skill names .* goes through that command's lock .* Without `claim_command`, nothing changes/);
+  assert.match(skill, /it instead claims with `--take-over`, linking the handoff comment/);
   assert.match(skill, /\*\*Parallel POs\*\* \(only when the config sets `po_labels`\)/);
   assert.match(skill, /A PO dispatches only issues that carry its own label or none of the `po_labels` labels, and adds its own label when it dispatches/);
   assert.match(skill, /`<slug>-<tool>-po-checkin\.md`/);
   assert.match(skill, /never writes the other PO's/);
-  assert.match(skill, /When the config's `promotion_po` names another runtime than this PO's, this PO runs no promotion/);
+  assert.match(skill, /Only when the config's `promotion_po` names another runtime than this PO's: this PO runs no promotion/);
   assert.match(skill, /With `any`, the default, every PO promotes its own line's work/);
   assert.match(skill, /`claim_command` with the session's own claimant, never the PO's/);
+  // The production_branch paragraph every repository reads is unchanged.
+  assert.match(skill, /This applies when `production_branch` is set\. When it is `none`, the integration branch ships/);
+  assert.match(skill, /Everything else a PO does for issues and PRs .* covers only the issues that carry its own label/);
   // The default name of the check-in file is unchanged.
   assert.match(skill, /`<repo owner>-<repo>-<slug>-po-checkin\.md` in `po_check_in_dir`/);
   const setup = flatten(read('plugins/cc-po/skills/setup/SKILL.md').replace(/\r\n/g, '\n'));

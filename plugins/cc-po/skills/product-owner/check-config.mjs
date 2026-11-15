@@ -82,7 +82,7 @@ export function scopePaths(paths) {
 // parsePoLabels splits po_labels into { tool, label } pairs; tool or label
 // is null for a pair that does not read `<tool>: <label>`.
 export function parsePoLabels(value) {
-  return value.split(',').map((pair) => pair.trim()).filter(Boolean).map((pair) => {
+  return value.replace(/\s*\([^)]*\)\s*$/, '').split(',').map((pair) => pair.trim()).filter(Boolean).map((pair) => {
     const m = pair.replace(/`/g, '').match(/^([a-z][a-z0-9-]*)\s*:\s*(\S+)$/);
     return m ? { tool: m[1], label: m[2] } : { tool: null, label: null };
   });
@@ -367,8 +367,8 @@ export function checkConfig(text, { root } = {}) {
       if (!claimCommand.includes(placeholder)) errors.push(`claim_command needs the placeholder ${placeholder} (see config-schema.md)`);
     }
   }
-  if (values.pr_issue_keyword !== undefined && !/^(refs|closes|fixes|resolves)(?![\w-])/i.test(unquote(values.pr_issue_keyword))) {
-    errors.push('pr_issue_keyword must be Refs, Closes, Fixes or Resolves');
+  if (values.pr_issue_keyword !== undefined && !/^(refs|closes|fixes|resolves|none)(?![\w-])/i.test(unquote(values.pr_issue_keyword))) {
+    errors.push('pr_issue_keyword must be Refs, Closes, Fixes, Resolves or none');
   }
   const poTools = new Set();
   if (values.po_labels !== undefined && !isNone(values.po_labels)) {
@@ -387,8 +387,8 @@ export function checkConfig(text, { root } = {}) {
   const promotionPo = values.promotion_po === undefined ? undefined : unquote(values.promotion_po);
   if (promotionPo !== undefined) {
     const m = promotionPo.match(/^([a-z][a-z0-9-]*)(?![\w:-])/);
-    if (!m || m[1] === 'none') errors.push('promotion_po must be any or a runtime name (claude, qwen, codex, ...)');
-    else if (m[1] !== 'any' && poTools.size > 0 && !poTools.has(m[1])) {
+    if (!m) errors.push('promotion_po must be any or a runtime name (claude, qwen, codex, ...)');
+    else if (m[1] !== 'any' && m[1] !== 'none' && poTools.size > 0 && !poTools.has(m[1])) {
       warnings.push('promotion_po names a runtime with no po_labels pair, so no PO of the listed runtimes promotes');
     }
   }

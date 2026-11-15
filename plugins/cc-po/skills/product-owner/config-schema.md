@@ -124,16 +124,16 @@ A **claimant** names one session: `<tool>:<session id>`. `<tool>` is the
 runtime's short lower-case name (`claude` for Claude Code, `qwen` for
 Qwen Code, `codex`, `antigravity`, `cursor`), and the session id is the
 runtime's own ("Session ID" in the `task-claim` skill; for a Claude
-desktop session, the id other sessions message it by,
-`$CLAUDE_CODE_HOST_SESSION_ID`). Every session has its own: a sub-session
+desktop session, the id other sessions message it by: `get_session` for
+`self`, also in `$CLAUDE_CODE_HOST_SESSION_ID`). Every session has its own: a sub-session
 never uses its PO's claimant.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `claim_command` | `none` | The repository's command that claims, keeps and releases an issue under a per-session lock, as a template with `<n>` (the issue), `<status>`, `<claimant>` and, where it takes one, `<nick>`, for example `` `node scripts/ops/lock.mjs <n> --status <status> --agent <nick> --claimant <claimant>` ``; a note may follow. The command takes the lock with `in-progress` and keeps it with `in-review`, releases it with `ready`, `backlog` or `done`, takes a claim this session made before the lock existed with `--adopt`, and moves the lock to a new session with `--take-over` (only after a hand-over or on the owner's assignment). The lock, not a comment race, decides who holds an issue ("Claim lock" in the `task-claim` skill). `none`: claims are `claim:` comments. |
-| `pr_issue_keyword` | `Refs` | The word before `#<n>` that ties a PR to its issue: `Refs`, or a closing keyword (`Closes`, `Fixes`, `Resolves`) when the claim gate reads closing references and a merge into `integration_branch` may close the issue. |
-| `po_labels` | `none` | One label per PO runtime, as `<tool>: <label>` pairs separated by `,` (for example `claude: po:claude, qwen: po:qwen`). A PO dispatches only issues that carry its own label or none of these labels, adds its own label when it dispatches, and keeps its own check-in and handoff files ("Lines and names" in the `product-owner` skill). A PO whose runtime has no pair dispatches only issues with none of these labels and adds none. `none`: one PO per line, no labels. |
-| `promotion_po` | `any` | The runtime (`<tool>`) whose PO runs promotions into `production_branch` and the live checks after them; a PO of any other runtime asks that PO (or the owner, when it cannot reach it) instead. `any`: every PO promotes its own line's work. |
+| `pr_issue_keyword` | `Refs` | The word before `#<n>` that ties a PR to its issue: `Refs`, or a closing keyword (`Closes`, `Fixes`, `Resolves`) when the claim gate reads closing references and a merge into `integration_branch` may close the issue. An issue closed that way is not yet Done when `done_definition` asks for more (a runtime change waiting on Production): the PO tracks it from the closed issue and marks it Done when it is. `none` means `Refs`. |
+| `po_labels` | `none` | One label per PO runtime, as `<tool>: <label>` pairs separated by `,` (for example `claude: po:claude, qwen: po:qwen`); a note in parentheses may follow. A PO dispatches only issues that carry its own label or none of these labels, adds its own label when it dispatches, and keeps its own check-in and handoff files ("Lines and names" in the `product-owner` skill). A PO whose runtime has no pair dispatches only issues with none of these labels and adds none. `none`: one PO per line, no labels. |
+| `promotion_po` | `any` | The runtime (`<tool>`) whose PO runs promotions into `production_branch` and the live checks after them; a PO of any other runtime asks that PO (or the owner, when it cannot reach it) instead. `any` (or `none`): every PO promotes its own line's work. |
 
 ## Sessions
 

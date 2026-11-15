@@ -98,8 +98,9 @@ them.
 
 The claim lock and parallel PO keys (`claim_command`, `pr_issue_keyword`,
 `po_labels`, `promotion_po`) are asked about only when the arguments or
-the user name them, or the repository's tracking document or agent
-instructions describe a per-session claim command or more than one PO.
+the user name them, or the tracking document or agent instructions you
+already read name a per-session claim command or PO labels for more than
+one PO on the same line at once (one per runtime).
 Then ask, in the same round or one more: the claim command as a template
 with `<n>`, `<status>`, `<claimant>` (and `<nick>` where it takes one); the
 word that ties a PR to its issue when the claim gate reads closing

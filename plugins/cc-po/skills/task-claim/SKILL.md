@@ -21,7 +21,7 @@ it names one: the tracking document wins over this skill where they differ.
 schema: the repository's default branch, no claim gate, no board bot.
 When the config sets `claim_command`, claims go through that command's
 per-session lock instead of comments: follow "Claim lock" below, which
-replaces steps 2, 3 and 6.
+changes steps 2, 3 and 6.
 
 ## Exempt
 
@@ -171,20 +171,25 @@ describes the command, it wins over this section.
 - **Your claim from before the lock.** An issue this session claimed
   before the repository had the lock is refused as unlocked; re-run the
   command with `--adopt`. Never adopt another session's claim.
-- **Take over** only after a hand-over (a handoff or release comment, and
-  the command's own release comment) or on the owner's assignment: run the
-  command with `--take-over` and link the hand-over or the owner's words.
+- **Take over** a lock another session still holds only after its handoff
+  comment or on the owner's assignment: run the command with `--take-over`
+  and link the handoff or the owner's words. After a release (the
+  command's release comment is on the issue), the lock is free and the
+  receiver claims normally.
 - **PR.** Put `Claimant: <claimant>` on a line of its own in the PR
   description, exactly as the command printed it, next to the issue
   reference.
 - **Keep** the lock while the PR is open: `<status>` `in-review`.
 - **End the claim** (replaces step 6): the comment keeps its body as in
   step 6, then the command releases the lock. Handoff: the handoff comment,
-  then `<status>` `ready`; the receiver claims with `--take-over` once the
+  then either keep the lock for the named receiver to take over, or
+  release with `<status>` `ready`, after which the receiver claims once the
   command's release comment is on the issue. Release: the release comment,
   then `ready` (or `backlog` when blocked, naming the blocker). Done:
   `<status>` `done` with the acceptance evidence, per `done_definition`.
 - **Subagents** work under their parent's claim and run no claim command.
+  A sub-session a PO started claims for itself, even where the host runs
+  it as a subagent.
 
 ## Fix a failed claim-gate check
 
@@ -193,8 +198,8 @@ it names each problem.
 
 | Problem | Fix |
 | --- | --- |
-| No issue referenced | Add `Refs #<n>` on its own line to the PR body. |
-| Closing keyword | Replace Fixes/Closes/Resolves with `Refs`. |
+| No issue referenced | Add `Refs #<n>` (or `pr_issue_keyword #<n>` when the config sets it) on its own line to the PR body. |
+| Closing keyword | Replace Fixes/Closes/Resolves with `Refs`, unless `pr_issue_keyword` is that keyword. |
 | No active claim | Post a new `claim:` with this PR's branch. |
 | Held by another session | Stop. Coordinate on the issue; never edit a claim or open a parallel issue to pass. |
 | Closed issue or a PR referenced | Reference the open issue the work is tracked on. |

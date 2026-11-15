@@ -774,7 +774,9 @@ describes such a lock or the user names them):
   `any`).
 
 The checker validates the new keys. The gatekeeper and watchdog templates,
-the Antigravity rules and the Codex package are unchanged.
+the Antigravity rules and the Codex package are unchanged; the Codex
+package does not read these keys yet, so in a repository that sets
+`claim_command`, run its PO with `cc-po`.
 
 ## License
 
