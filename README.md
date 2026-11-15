@@ -100,29 +100,35 @@ What stays the same and what differs on Antigravity:
   `manage_subagents`, and revive in place via `send_message` after a server
   restart (each sub-session creates its own git worktree first). Top-level
   `agentapi new-conversation` is reserved for Product Owner sessions.
-- **Command permissions.** Allow the `agentapi`, `gh`, `git fetch`,
-  `git push` and `git ls-remote` single-command prefixes ("always allow" on
-  first prompt or in Settings -> Permission Grants / Command Allowlist) so
-  the PO and sub-sessions do not stall waiting for manual approval.
+- **Command permissions.** When the owner uses **Turbo** terminal execution mode
+  (or has already approved commands), `agentapi`, `gh`, `git fetch`,
+  `git push` and `git ls-remote` run without prompts and the PO does not ask
+  for a Command Allowlist. Only if a command pauses or is refused does the PO
+  point once to **Turbo** mode or Settings -> Permission Grants / Command
+  Allowlist for those prefixes.
 - **Model, effort and shared gatekeeper.** Running conversations and
   subagents keep their initial model, and session effort reconciliation is
-  skipped (Codex CLI reviews still receive
-  `-c model_reasoning_effort=<subagent_effort>`). Sub-sessions inherit the
-  PO's model unless `agent_model` (or an `Antigravity:` note on it) pins
+  skipped silently without cluttering the digest (Codex CLI reviews still
+  receive `-c model_reasoning_effort=<subagent_effort>`). Sub-sessions inherit
+  the PO's model unless `agent_model` (or an `Antigravity:` note on it) pins
   `flash_lite`, `flash` or `pro`, so a PO the owner runs on `Orchestrator
   (Carbon)` or `Orchestrator (Argon)` gets Orchestrator's own routing to
-  Hydrogen in every worker while read-only `research` reviewers answer on
-  the lead model. When `agent_model` includes an `Antigravity:` note that
-  matches what Antigravity runs, no mismatch is reported; flagship-tier
-  security reviews run on `Claude Opus`, `Gemini 4 Carbon` or `Orchestrator
-  (Carbon)` (`TypeName: "research"`) without waiting on Opus ("Models and
-  Orchestrator" in `rules/AGENTS.md`). Under `po_wake: gatekeeper`
-  (the default), each repository keeps one shared Antigravity scheduled
-  automation (`<repo owner>-<repo>-po-gatekeeper`) running
-  `skills/product-owner/agy-gatekeeper.mjs` every 30 minutes with zero model
-  tokens and zero extra sidebar conversations, waking only the POs of that
-  repository that match a gatekeeper reason (`agentapi send-message`),
-  enabled once by the owner in the Automations dashboard.
+  Hydrogen in every worker while read-only `research` reviewers omit write and
+  shell tools (noting that Orchestrator may still delegate routine substeps
+  to Hydrogen unless run directly on `Gemini 4 Carbon` or `Claude Opus`).
+  When `agent_model` includes an `Antigravity:` note that matches what
+  Antigravity runs, no mismatch is reported; flagship-tier security reviews
+  run on `Claude Opus`, `Gemini 4 Carbon`, or `Orchestrator (Carbon)`
+  (`TypeName: "research"`) when Hydrogen substep routing is allowed by the
+  repository ("Models and Orchestrator" in `rules/AGENTS.md`). Under
+  `po_wake: gatekeeper` (the default), each repository keeps one shared
+  Antigravity scheduled automation (`<repo owner>-<repo>-po-gatekeeper`)
+  running `skills/product-owner/agy-gatekeeper.mjs` every 30 minutes with
+  zero model tokens and zero extra sidebar conversations, waking only the POs
+  of that repository that match a gatekeeper reason
+  (`agentapi send-message`), enabled once by the owner in the Automations
+  dashboard (POs verify activation from both `~/.gemini/config/config.json`
+  and the current server run's `sidecar.log`).
 
 ### Codex
 
@@ -707,6 +713,29 @@ vendor's model id:
 
 Update the plugin in Claude Code (`claude plugin update`) or copy the updated
 `plugins/cc-po` into the Antigravity plugin folder and restart Antigravity.
+
+### Upgrading to 2.14.1
+
+No required config change. Refines Antigravity host rules in `rules/AGENTS.md`:
+
+- **Turbo mode friendly:** POs do not ask the owner to configure a Command
+  Allowlist when commands run cleanly (such as in **Turbo** terminal execution
+  mode), and only prompt for **Turbo** or Command Allowlist prefixes if a
+  command is actually blocked.
+- **Silent effort skip:** Antigravity skips session effort reconciliation
+  without repeating an effort-API note in every PO digest.
+- **Accurate gatekeeper enabled detection:** Checks `sidecars["<sidecar id>"].enabled === true`
+  in `~/.gemini/config/config.json` (read-only) together with the latest
+  start block in `<appDataDir>/sidecar_data/<sidecar id>/logs/sidecar.log`
+  for the current server run before warning that durable wake automation is
+  not enabled.
+- **Accurate Orchestrator delegation wording:** Notes that `TypeName: "research"`
+  omits write/shell tools while Orchestrator may still delegate routine
+  substeps to Hydrogen unless run on direct `Gemini 4 Carbon` or
+  `Claude Opus` (and respects repository rules on strict no-delegation gates).
+
+Copy the updated `plugins/cc-po` into the Antigravity plugin folder again and
+restart Antigravity.
 
 ## License
 
