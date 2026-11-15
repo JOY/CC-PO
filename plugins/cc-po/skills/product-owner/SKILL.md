@@ -34,7 +34,16 @@ skill; a key named here in backticks (`owner_name`) is a config key.
   the owner reads is in `report_language`.
 - The repository's agent instructions (`agent_instructions`) and the
   documents they route to win over this skill. The claim protocol is in
-  `tracking_doc` and the `task-claim` skill. The owner's standing
+  `tracking_doc` and the `task-claim` skill. When the config sets
+  `claim_command`, every claim this skill names (a sub-session's, and the
+  PO's own `claim:`, `release:`, `handoff:` and `done:`) goes through that
+  command's lock as "Claim lock" in `task-claim` says, each session with its
+  own claimant. Where this skill has a session post a `release:` for an
+  earlier session's claim and then claim (a handoff resumed, a PO whose
+  session id changed after a restart), it instead claims with
+  `--take-over`, linking the handoff comment, the owner's words, or, for
+  the PO's own earlier session, the check-in or handoff file that records
+  it. Without `claim_command`, nothing changes. The owner's standing
   instructions apply as quoted: the current (not superseded) entries of
   `decision_log` when the config sets one, otherwise the config's "Owner
   instructions" section. Keep them in one of the two places, never both.
@@ -193,7 +202,10 @@ is `po_wake: off`, `on` is the default):
   `<repo owner>-<repo>-<slug>-po-checkin.md` in
   `po_check_in_dir` (the "Check-in file" section of `gatekeeper-template.md`,
   or of `watchdog-template.md` in watchdog mode, has its start and the
-  naming). Every wake points at it, and in watchdog mode the in-session
+  naming). Where the config sets `po_labels`, the name carries the PO's
+  runtime before `-po-checkin` (`<slug>-<tool>-po-checkin.md`), so two POs
+  never share a file ("Lines and names"); a wake message that names the
+  file without `-<tool>` then means this PO's own file. Every wake points at it, and in watchdog mode the in-session
   check-in cron's prompt does too. The PO
   keeps it current when the line's state changes. It is machine state: never
   committed, no secrets, and GitHub stays the record the digest is built
@@ -443,6 +455,31 @@ it small.
   `Payments Product Owner`). Sub-sessions are titled `#<issue> <short task>`.
 - A PO works only its own line. Work found for another line goes to that
   line's PO with SendMessage, or to the owner if the line has no PO.
+- **Parallel POs** (only when the config sets `po_labels`): POs of different
+  runtimes may run on one repository at once, each with its label.
+  - A PO dispatches only issues that carry its own label or none of the
+    `po_labels` labels, and adds its own label when it dispatches, before
+    `start_session` or the `PO queued:` comment
+    (`gh issue edit <n> --repo <owner/repo> --add-label <its label>`). An
+    issue with another PO's label is that PO's, unless the owner assigns it
+    (then a take-over, "Claim lock" in `task-claim`). A PO whose runtime has
+    no pair dispatches only issues with none of these labels and adds none.
+    If an issue ends up with two PO labels, the PO whose sub-session does
+    not hold the lock removes its own label.
+  - Everything else a PO does for issues and PRs (the acceptance gate,
+    merges, PR monitoring, the orphaned-handoff scan, Production steps, the
+    digest) covers only the issues that carry its own label, and their PRs.
+    `sub_sessions_normal` and `sub_sessions_max` count each PO's own
+    sub-sessions. One PO keeps the sprints and runs the sprint review: the
+    PO of `promotion_po`, else of the first `po_labels` pair. A PO woken for
+    a PR of another PO's issue leaves it alone.
+  - Each PO keeps its own check-in and handoff files, named with its runtime
+    (`<slug>-<tool>-po-checkin.md`, `<slug>-<tool>-po-handoff.md`), or the
+    files the repository's rules name for it, and never writes the other
+    PO's.
+  - Only the PO of `promotion_po` promotes, when the config names one
+    ("Promoting to Production").
+  - Each sub-session claims with its own claimant, never its PO's.
 
 ### Peer POs and security review
 
@@ -514,7 +551,9 @@ owner never has to paste an approval into a sub-session's chat.
 3. For each candidate, check ownership with the `task-claim` skill: active
    claim, recent pushes or PR activity, and live sessions (`ListAgents`,
    `list_sessions`). Never take over an active claim; follow the stale-claim
-   rule in the tracking document.
+   rule in the tracking document. Under a claim lock (`claim_command`), the
+   holder is the claimant in the command's latest lock comment on the issue;
+   with `po_labels`, skip issues that carry another PO's label.
 4. Check dependencies. An issue is blocked while an open issue blocks it,
    through GitHub's native "blocked by" relation or a `Blocked by #<n>` line
    in its body. Dispatch only unblocked issues; a blocked one waits, and the
@@ -846,7 +885,7 @@ finds and files; it never fixes.
   commit identity locally (`git config user.name` and `user.email`) as
   the repository's commit rule requires, since the isolation ignores the
   global one. It pushes the branch from there, opens a PR with
-  `Refs #<review issue>` into `integration_branch`, and runs the review gate the repository's
+  `Refs #<review issue>` (or `pr_issue_keyword`) into `integration_branch`, and runs the review gate the repository's
   rules set for that file. The PO is that PR's acceptance gate: once the
   `required_checks` pass, the threads are resolved and the final head's
   review is complete as `review_rules` defines it, it posts
@@ -1064,8 +1103,12 @@ session gets, so it carries:
 - **Reading**: `agent_instructions` and the rule documents the config lists
   (`task_scope`, `tracking_doc`, `review_rules`, and the `domain_rules` for
   the files the task touches).
-- **Process**: claim with `task-claim` before editing; create and fill any
-  new issue per the table above; a PR with `Refs #<n>` into
+- **Process**: claim with `task-claim` before editing (under a claim lock:
+  `claim_command` with the session's own claimant, never the PO's, the
+  nickname the brief names where the command takes one, and that
+  claimant on a `Claimant:` line in the PR); create and fill any
+  new issue per the table above; a PR with `Refs #<n>` (or
+  `pr_issue_keyword #<n>` when the config sets it) into
   `integration_branch` (a draft first when `draft_pr_first` is yes), then the
   PR monitor step of "Coordinating" with the `pr_monitor` mode the brief
   names (the config's value, named as `bind` or `auto_fix` only when its note
@@ -1347,6 +1390,12 @@ session gets, so it carries:
 
 ### Promoting to Production
 
+Only when the config's `promotion_po` names another runtime than this
+PO's: this PO runs no promotion and no live check after one; it asks that
+runtime's PO (with SendMessage, or through the owner when it cannot reach
+it) and tracks the answer. With `any`, the default, every PO promotes its
+own line's work.
+
 This applies when `production_branch` is set. When it is `none`, the
 integration branch ships, so know what a merge into `integration_branch`
 does before the first "merge" of a runtime change: read the deploy
@@ -1419,7 +1468,7 @@ owner ended. Nothing in this skill asks for one.
   `po_handoff` is `on`, this goes in one file, the file the PO already keeps
   for it, else `<po_check_in_dir>/<repo owner>-<repo>-<slug>-po-handoff.md`
   (named as the check-in file is: `<slug>` is the line's label after
-  `line:`), which the PO keeps current as sessions start and end; at
+  `line:`, followed by `-<tool>` where the config sets `po_labels`), which the PO keeps current as sessions start and end; at
   retirement it rewrites it whole, carrying forward every standing exception
   line and every `ended` line the incoming PO still needs to see. Like the
   check-in file it is machine state outside the repository: never committed,

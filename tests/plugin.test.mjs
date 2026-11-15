@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkConfig, findRoot, insideRoot, outsidePath, parseConfig, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
+import { checkConfig, findRoot, insideRoot, outsidePath, parseConfig, parsePoLabels, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
 import {
   evaluateGatekeeper,
   expandHome,
@@ -723,9 +723,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.14.1 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.14.1');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.14.1');
+test('the version is 2.15.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.15.0');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.15.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -737,6 +737,7 @@ test('the version is 2.14.1 and the README describes the gatekeeper and Antigrav
   assert.match(readme, /### Upgrading to 2\.13\.0/);
   assert.match(readme, /### Upgrading to 2\.14\.0/);
   assert.match(readme, /### Upgrading to 2\.14\.1/);
+  assert.match(readme, /### Upgrading to 2\.15\.0/);
   assert.match(readme, /The Claude app gatekeeper keeps no state file/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
@@ -1256,4 +1257,95 @@ test('the Antigravity rules cover Orchestrator, inherited models, flagship tier 
   const sharedConfig = read('plugins/cc-po/skills/setup/sample-config.md')
     .replace('- agent_model: claude-sonnet-5-5', '- agent_model: claude-sonnet-5-5 (Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)');
   assert.deepEqual(checkConfig(sharedConfig), { errors: [], warnings: [] });
+});
+
+// 2.15.0: an opt-in per-session claim lock and parallel POs. Without the new
+// keys nothing changes, so every assertion about a config without them is
+// the same as before.
+const lockKeys = `
+## Claim lock and parallel POs
+
+- claim_command: \`node scripts/ops/lock.mjs <n> --status <status> --agent <nick> --claimant <claimant>\`;
+  never export the claimant variable.
+- pr_issue_keyword: Closes
+- po_labels: claude: po:claude, qwen: po:qwen
+- promotion_po: claude
+`;
+
+test('the claim lock and parallel PO keys are optional, known and checked', () => {
+  // A config without them is unchanged: valid, no warning, no new value.
+  assert.deepEqual(checkConfig(minimal), { errors: [], warnings: [] });
+  const { values } = parseConfig(minimal);
+  for (const key of ['claim_command', 'pr_issue_keyword', 'po_labels', 'promotion_po']) assert.equal(values[key], undefined);
+  assert.deepEqual(checkConfig(read('plugins/cc-po/skills/setup/sample-config.md')), { errors: [], warnings: [] });
+  // With them, valid.
+  assert.deepEqual(checkConfig(minimal + lockKeys), { errors: [], warnings: [] });
+  assert.deepEqual(checkConfig(minimal + '\n- claim_command: none\n- pr_issue_keyword: Refs\n- po_labels: none\n- promotion_po: any\n'), { errors: [], warnings: [] });
+  assert.deepEqual(parsePoLabels('claude: po:claude, `qwen: po:qwen`'), [{ tool: 'claude', label: 'po:claude' }, { tool: 'qwen', label: 'po:qwen' }]);
+  // Errors.
+  const bad = (extra) => checkConfig(minimal + extra).errors.join('\n');
+  assert.match(bad('\n- claim_command: `node lock.mjs <n> --status in-progress`\n'), /claim_command needs the placeholder <status>/);
+  assert.match(bad('\n- claim_command: `node lock.mjs <n> --status <status>`\n'), /claim_command needs the placeholder <claimant>/);
+  assert.match(bad('\n- pr_issue_keyword: Implements\n'), /pr_issue_keyword must be Refs, Closes, Fixes, Resolves or none/);
+  // none keeps the default, and a note may follow po_labels.
+  assert.deepEqual(checkConfig(minimal + '\n- pr_issue_keyword: none\n- promotion_po: none\n- po_labels: claude: po:claude, qwen: po:qwen (owner, 2026-11-16)\n'), { errors: [], warnings: [] });
+  assert.match(bad('\n- po_labels: claude po:claude\n'), /po_labels pair 1 must read <tool>: <label>/);
+  assert.match(bad('\n- po_labels: claude: po:a, claude: po:b\n'), /po_labels pair 2: its tool appears in an earlier pair/);
+  assert.match(bad('\n- po_labels: claude: po:x, qwen: po:x\n'), /po_labels pair 2: its label appears in an earlier pair/);
+  assert.match(bad('\n- promotion_po: Claude Code\n'), /promotion_po must be any or a runtime name/);
+  // A promoter with no label pair would leave no PO of the listed runtimes promoting.
+  assert.match(checkConfig(minimal + '\n- po_labels: claude: po:claude\n- promotion_po: qwen\n').warnings.join('\n'), /promotion_po names a runtime with no po_labels pair/);
+  const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
+  assert.match(schema, /## Claim lock and parallel POs/);
+  assert.match(schema, /\| `claim_command` \| `none` \|/);
+  assert.match(schema, /\| `pr_issue_keyword` \| `Refs` \|/);
+  assert.match(schema, /\| `po_labels` \| `none` \|/);
+  assert.match(schema, /\| `promotion_po` \| `any` \|/);
+  assert.match(flatten(schema), /With none of these keys set, the skills behave as before/);
+});
+
+test('task-claim follows the claim lock only when claim_command is set, and keeps comment claims otherwise', () => {
+  const claim = flatten(read('plugins/cc-po/skills/task-claim/SKILL.md').replace(/\r\n/g, '\n'));
+  // The default protocol is still there, word for word.
+  assert.match(claim, /claim: executor=<executor> session=<id> scope="<files or module>" branch=<branch> target=<YYYY-MM-DD>/);
+  assert.match(claim, /The active claim with the lowest comment id wins/);
+  assert.match(claim, /Use `Refs`, never Fixes, Closes, or Resolves/);
+  // The lock mode is gated on the key.
+  assert.match(claim, /When the config sets `claim_command`, claims go through that command's per-session lock instead of comments/);
+  assert.match(claim, /## Claim lock This applies only when the config sets `claim_command`/);
+  assert.match(claim, /Pass it as `<claimant>` on every call/);
+  assert.match(claim, /Never put it in an environment variable that other sessions inherit/);
+  assert.match(claim, /Never claim with bare label edits/);
+  assert.match(claim, /with `--adopt`\. Never adopt another session's claim/);
+  assert.match(claim, /\*\*Take over\*\* a lock another session still holds only after its handoff comment or on the owner's assignment/);
+  assert.match(claim, /the lock is free and the receiver claims normally/);
+  assert.match(claim, /A sub-session a PO started claims for itself, even where the host runs it as a subagent/);
+  assert.match(claim, /Put `Claimant: <claimant>` on a line of its own in the PR description/);
+  assert.match(claim, /then `ready` \(or `backlog` when blocked/);
+  assert.match(claim, /Only when the config sets `pr_issue_keyword` to a closing keyword/);
+});
+
+test('the PO honours po_labels, the claim lock and promotion_po only when the config sets them', () => {
+  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  assert.match(skill, /When the config sets `claim_command`, every claim this skill names .* goes through that command's lock .* Without `claim_command`, nothing changes/);
+  assert.match(skill, /it instead claims with `--take-over`, linking the handoff comment/);
+  assert.match(skill, /\*\*Parallel POs\*\* \(only when the config sets `po_labels`\)/);
+  assert.match(skill, /A PO dispatches only issues that carry its own label or none of the `po_labels` labels, and adds its own label when it dispatches/);
+  assert.match(skill, /`<slug>-<tool>-po-checkin\.md`/);
+  assert.match(skill, /never writes the other PO's/);
+  assert.match(skill, /Only when the config's `promotion_po` names another runtime than this PO's: this PO runs no promotion/);
+  assert.match(skill, /With `any`, the default, every PO promotes its own line's work/);
+  assert.match(skill, /`claim_command` with the session's own claimant, never the PO's/);
+  // The production_branch paragraph every repository reads is unchanged.
+  assert.match(skill, /This applies when `production_branch` is set\. When it is `none`, the integration branch ships/);
+  assert.match(skill, /Everything else a PO does for issues and PRs .* covers only the issues that carry its own label/);
+  // The default name of the check-in file is unchanged.
+  assert.match(skill, /`<repo owner>-<repo>-<slug>-po-checkin\.md` in `po_check_in_dir`/);
+  const setup = flatten(read('plugins/cc-po/skills/setup/SKILL.md').replace(/\r\n/g, '\n'));
+  assert.match(setup, /are asked about only when the arguments or the user name them/);
+  assert.match(setup, /left out, every one keeps its default and the skills behave as without them/);
+  // The templates other clients use do not mention the new keys.
+  for (const path of ['gatekeeper-template.md', 'watchdog-template.md', 'agy-gatekeeper.mjs']) {
+    assert.doesNotMatch(read(`plugins/cc-po/skills/product-owner/${path}`), /claim_command|po_labels|promotion_po/);
+  }
 });

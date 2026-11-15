@@ -113,6 +113,28 @@ repository has not defined them.
 | `agent_effort` | the runtime's default | Effort for sub-sessions, one of `low`, `medium`, `high`, `xhigh`, `max`, passed to `start_session` (and `set_session_effort` for a running one); the app takes an effort at or below the PO's own, so the PO session runs at least that high. It covers the sub-session itself, not its subagents or its reviews (see `subagent_effort`). Absent or `none`: a sub-session inherits the PO's effort. Any other value than a level (after which a note may follow) is a config error. When the note allows a higher level for one kind of task, it names that level after `Exception:` (`Exception: xhigh only for hard security work`), and the checker rejects any other word there (only the literal `Exception:` followed by a word is read, case-insensitively, so even "No exception: ask the owner" is an error; reword such a note), because the PO passes it to `start_session`. A PO that starts a session at the exception records it in the brief (`Effort exception: <level>, <reason>`) and, where `po_handoff` is `on`, in its handoff file; effort reconciliation leaves that session at the exception level until a later record ends it (an `effort-exception: ended` comment on the issue, or an `ended` line on the handoff file), and the latest record wins over the brief's static line ("Starting a sub-session" in the `product-owner` skill). An exception level above the PO's own effort cannot be applied: the PO then grants no exception, records none and runs the task at `agent_effort`. |
 | `subagent_effort` | `agent_effort` | Effort for in-process subagents (the Agent tool: a sub-session's, and the PO's own, such as the sprint review's audit subagents) and for the reviews a sub-session runs; a Codex review takes it on its command line (`-c model_reasoning_effort=<level>`), because it otherwise reads the machine's `~/.codex/config.toml`. Absent or `none`: the same level as `agent_effort`. The same levels as `agent_effort` apply; any other value is a config error. |
 
+## Claim lock and parallel POs
+
+Optional, for a repository that locks each claim to one session or runs
+more than one PO at once (one per runtime, for example a Claude Code PO
+and a Qwen Code PO). With none of these keys set, the skills behave as
+before: claims are `claim:` comments and the lowest comment id wins.
+
+A **claimant** names one session: `<tool>:<session id>`. `<tool>` is the
+runtime's short lower-case name (`claude` for Claude Code, `qwen` for
+Qwen Code, `codex`, `antigravity`, `cursor`), and the session id is the
+runtime's own ("Session ID" in the `task-claim` skill; for a Claude
+desktop session, the id other sessions message it by: `get_session` for
+`self`, also in `$CLAUDE_CODE_HOST_SESSION_ID`). Every session has its own: a sub-session
+never uses its PO's claimant.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `claim_command` | `none` | The repository's command that claims, keeps and releases an issue under a per-session lock, as a template with `<n>` (the issue), `<status>`, `<claimant>` and, where it takes one, `<nick>`, for example `` `node scripts/ops/lock.mjs <n> --status <status> --agent <nick> --claimant <claimant>` ``; a note may follow. The command takes the lock with `in-progress` and keeps it with `in-review`, releases it with `ready`, `backlog` or `done`, takes a claim this session made before the lock existed with `--adopt`, and moves the lock to a new session with `--take-over` (only after a hand-over or on the owner's assignment). The lock, not a comment race, decides who holds an issue ("Claim lock" in the `task-claim` skill). `none`: claims are `claim:` comments. |
+| `pr_issue_keyword` | `Refs` | The word before `#<n>` that ties a PR to its issue: `Refs`, or a closing keyword (`Closes`, `Fixes`, `Resolves`) when the claim gate reads closing references and a merge into `integration_branch` may close the issue. An issue closed that way is not yet Done when `done_definition` asks for more (a runtime change waiting on Production): the PO tracks it from the closed issue and marks it Done when it is. `none` means `Refs`. |
+| `po_labels` | `none` | One label per PO runtime, as `<tool>: <label>` pairs separated by `,` (for example `claude: po:claude, qwen: po:qwen`); a note in parentheses may follow. A PO dispatches only issues that carry its own label or none of these labels, adds its own label when it dispatches, and keeps its own check-in and handoff files ("Lines and names" in the `product-owner` skill). A PO whose runtime has no pair dispatches only issues with none of these labels and adds none. `none`: one PO per line, no labels. |
+| `promotion_po` | `any` | The runtime (`<tool>`) whose PO runs promotions into `production_branch` and the live checks after them; a PO of any other runtime asks that PO (or the owner, when it cannot reach it) instead. `any` (or `none`): every PO promotes its own line's work. |
+
 ## Sessions
 
 | Key | Default | Meaning |
