@@ -19,6 +19,9 @@ named here in backticks is a config key). Read its `tracking_doc` first when
 it names one: the tracking document wins over this skill where they differ.
 "The owner" is `owner_name`. Without a config, use the defaults in the
 schema: the repository's default branch, no claim gate, no board bot.
+When the config sets `claim_command`, claims go through that command's
+per-session lock instead of comments: follow "Claim lock" below, which
+replaces steps 2, 3 and 6.
 
 ## Exempt
 
@@ -99,11 +102,16 @@ collaborator, or contributor, does not count.
 Push the first commit and open the PR into `integration_branch` with the
 reference on its own line. Use `Refs`, never Fixes, Closes, or Resolves;
 merging into the integration branch must not close the issue, and a claim
-gate rejects closing keywords.
+gate rejects closing keywords. Only when the config sets
+`pr_issue_keyword` to a closing keyword (a gate that reads closing
+references), use that word instead.
 
 ```text
 Refs #<n>
 ```
+
+Under a claim lock, the PR description also carries
+`Claimant: <claimant>` on a line of its own ("Claim lock" below).
 
 When `draft_pr_first` is yes, open it as a draft and run
 `gh pr ready <number>` when the work is complete.
@@ -140,6 +148,44 @@ Post exactly one of:
   CI, tooling) is Done once merged with its evidence, and a findings or
   measurements task is Done when its `done:` carries them.
 
+## Claim lock
+
+This applies only when the config sets `claim_command`. The lock is per
+session: of two sessions claiming at the same moment exactly one wins,
+and the other is refused with the holder's claimant. Where `tracking_doc`
+describes the command, it wins over this section.
+
+- **Claimant.** Yours is `<tool>:<session id>` (see `config-schema.md`,
+  "Claim lock and parallel POs"), your own session's, never your PO's or
+  another session's. Pass it as `<claimant>` on every call. Never put it in
+  an environment variable that other sessions inherit (a shell profile, an
+  exported variable, a sub-session's environment), even when the command
+  can read one.
+- **Claim** (replaces steps 2 and 3): run `claim_command` with
+  `<status>` `in-progress` (and, where it takes `<nick>`, the nickname your
+  brief or `tracking_doc` gives). Never claim with bare label edits
+  (`gh issue edit --add-label`) or a `claim:` comment: they take no lock.
+  If the command refuses because another claimant holds the lock, stop and
+  coordinate as in step 1; never edit the lock by hand. Post the claim
+  comment `tracking_doc` asks for, if any, naming the branch.
+- **Your claim from before the lock.** An issue this session claimed
+  before the repository had the lock is refused as unlocked; re-run the
+  command with `--adopt`. Never adopt another session's claim.
+- **Take over** only after a hand-over (a handoff or release comment, and
+  the command's own release comment) or on the owner's assignment: run the
+  command with `--take-over` and link the hand-over or the owner's words.
+- **PR.** Put `Claimant: <claimant>` on a line of its own in the PR
+  description, exactly as the command printed it, next to the issue
+  reference.
+- **Keep** the lock while the PR is open: `<status>` `in-review`.
+- **End the claim** (replaces step 6): the comment keeps its body as in
+  step 6, then the command releases the lock. Handoff: the handoff comment,
+  then `<status>` `ready`; the receiver claims with `--take-over` once the
+  command's release comment is on the issue. Release: the release comment,
+  then `ready` (or `backlog` when blocked, naming the blocker). Done:
+  `<status>` `done` with the acceptance evidence, per `done_definition`.
+- **Subagents** work under their parent's claim and run no claim command.
+
 ## Fix a failed claim-gate check
 
 This applies when the config names a `claim_gate`. Read the check summary:
@@ -153,6 +199,8 @@ it names each problem.
 | Held by another session | Stop. Coordinate on the issue; never edit a claim or open a parallel issue to pass. |
 | Closed issue or a PR referenced | Reference the open issue the work is tracked on. |
 | Head in a fork | Push the branch to the repository itself. |
+| No lock, or the lock held by another claimant (claim lock) | Run `claim_command` with your claimant (`--adopt` for your own claim from before the lock). If another session holds it, stop as above. |
+| No `Claimant:` line, or a different claimant (claim lock) | Put `Claimant: <claimant>` on its own line in the PR body, the claimant that holds the lock. |
 
 Then trigger a fresh evaluation: edit the PR body, push the next commit, or
 dispatch the gate's workflow on `default_branch`. GitHub runs
@@ -170,4 +218,6 @@ Never take over only because a claim looks old. Check recent commits, PR
 activity, and active worktrees first; if the claim's session may still be
 active, ask the owner. When that session is gone, post
 `release: session=<stale id> reason="taken over by <new id>: <evidence>"`, then
-your own claim.
+your own claim. Under a claim lock, never release or delete another
+session's lock yourself: collect the evidence and ask the owner, then
+follow the force-release or take-over path `tracking_doc` gives.

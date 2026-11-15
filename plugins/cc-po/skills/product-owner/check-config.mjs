@@ -29,6 +29,7 @@ export const KNOWN = new Set([
   'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
   'pr_monitor', 'sidebar_groups',
+  'claim_command', 'pr_issue_keyword', 'po_labels', 'promotion_po',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -76,6 +77,15 @@ export function scopePaths(paths) {
   return paths.split(/[\s,]+/)
     .map((word) => word.replace(/^[`'"(\[{<]+/, '').replace(/[`'")\]}>:;]+$/, ''))
     .filter(Boolean);
+}
+
+// parsePoLabels splits po_labels into { tool, label } pairs; tool or label
+// is null for a pair that does not read `<tool>: <label>`.
+export function parsePoLabels(value) {
+  return value.split(',').map((pair) => pair.trim()).filter(Boolean).map((pair) => {
+    const m = pair.replace(/`/g, '').match(/^([a-z][a-z0-9-]*)\s*:\s*(\S+)$/);
+    return m ? { tool: m[1], label: m[2] } : { tool: null, label: null };
+  });
 }
 
 const LINES_HEADER = ['line', 'label', 'product line option id', 'po session'];
@@ -345,6 +355,41 @@ export function checkConfig(text, { root } = {}) {
       if (m && !attributed(m[1])) {
         warnings.push('sidebar_groups on needs a note naming the owner (or a decision id), a date and that the PO runs in auto or bypass mode, for example "on (owner, 2026-11-12, PO in auto mode)"; without it the PO runs off');
       }
+    }
+  }
+  // Claim lock and parallel POs (2.15.0), all optional: with none of these
+  // keys a repository keeps comment claims and one PO per line. The claim
+  // command is run with the issue, the status and the session's claimant
+  // filled in, so it needs those placeholders.
+  const claimCommand = values.claim_command;
+  if (claimCommand !== undefined && !isNone(claimCommand)) {
+    for (const placeholder of ['<n>', '<status>', '<claimant>']) {
+      if (!claimCommand.includes(placeholder)) errors.push(`claim_command needs the placeholder ${placeholder} (see config-schema.md)`);
+    }
+  }
+  if (values.pr_issue_keyword !== undefined && !/^(refs|closes|fixes|resolves)(?![\w-])/i.test(unquote(values.pr_issue_keyword))) {
+    errors.push('pr_issue_keyword must be Refs, Closes, Fixes or Resolves');
+  }
+  const poTools = new Set();
+  if (values.po_labels !== undefined && !isNone(values.po_labels)) {
+    const poLabels = new Set();
+    parsePoLabels(values.po_labels).forEach(({ tool, label }, i) => {
+      const pair = `po_labels pair ${i + 1}`;
+      if (!tool) errors.push(`${pair} must read <tool>: <label> (for example claude: po:claude)`);
+      else if (poTools.has(tool)) errors.push(`${pair}: its tool appears in an earlier pair`);
+      else if (poLabels.has(label)) errors.push(`${pair}: its label appears in an earlier pair`);
+      if (tool) {
+        poTools.add(tool);
+        poLabels.add(label);
+      }
+    });
+  }
+  const promotionPo = values.promotion_po === undefined ? undefined : unquote(values.promotion_po);
+  if (promotionPo !== undefined) {
+    const m = promotionPo.match(/^([a-z][a-z0-9-]*)(?![\w:-])/);
+    if (!m || m[1] === 'none') errors.push('promotion_po must be any or a runtime name (claude, qwen, codex, ...)');
+    else if (m[1] !== 'any' && poTools.size > 0 && !poTools.has(m[1])) {
+      warnings.push('promotion_po names a runtime with no po_labels pair, so no PO of the listed runtimes promotes');
     }
   }
   // The PO passes an effort to start_session, which takes one of a fixed set

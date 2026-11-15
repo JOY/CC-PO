@@ -10,7 +10,8 @@ Skills:
 
 - `product-owner`: runs a PO session.
 - `task-claim`: one writing session per GitHub issue, through `claim:`,
-  checkpoint, `handoff:`, `release:` and `done:` comments.
+  checkpoint, `handoff:`, `release:` and `done:` comments, or through the
+  repository's per-session claim lock when its config names one.
 - `setup`: writes the repository's `docs/product-owner-config.md`.
 
 The skills use the GitHub CLI (`gh`). The plugin also lists an optional

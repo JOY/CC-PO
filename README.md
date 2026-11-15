@@ -242,6 +242,15 @@ Adjust it if your integration branch uses another merge method.
   The issue and its comments are the record; the Project is the board view.
   A repository can enforce claims with a required check of its own
   (`claim_gate`), but the plugin does not need one.
+- **Claim lock and parallel POs (optional).** A repository whose own
+  command locks each claim to one session (`claim_command`) gets claims
+  through that command instead of comments, with the session's claimant
+  (`<tool>:<session id>`) on every call and on a `Claimant:` line in each
+  PR. A repository that runs one PO per runtime at once (for example a
+  Claude Code PO and a Qwen Code PO) gives each a label (`po_labels`): a PO
+  dispatches only issues with its own label or none, and keeps its own
+  check-in file. `promotion_po` lets one runtime's PO alone promote.
+  Without these keys nothing changes.
 - **Production.** Sub-sessions never run Production, secret or credential
   steps. They merge a reviewed runbook; the PO pins that commit, checks it in
   a fresh clone, shows the owner the concrete steps, and runs exactly those
@@ -736,6 +745,36 @@ No required config change. Refines Antigravity host rules in `rules/AGENTS.md`:
 
 Copy the updated `plugins/cc-po` into the Antigravity plugin folder again and
 restart Antigravity.
+
+### Upgrading to 2.15.0
+
+No required config change: without the new keys every skill behaves as in
+2.14.1. Four optional keys, in a new "Claim lock and parallel POs" section
+of [`config-schema.md`](plugins/cc-po/skills/product-owner/config-schema.md),
+are for a repository that locks each claim to one session or runs more than
+one PO at once (the setup skill asks for them only when the repository
+describes such a lock or the user names them):
+
+- `claim_command`: the repository's claim command as a template with `<n>`,
+  `<status>`, `<claimant>` (and `<nick>`). When set, `task-claim` claims,
+  keeps and releases through it (`in-progress`, `in-review`; `ready`,
+  `backlog`, `done`), never with bare label edits or `claim:` comments,
+  passes the session's own claimant `<tool>:<session id>` on every call,
+  never exports it to an environment other sessions inherit, uses
+  `--adopt` for its own claim from before the lock and `--take-over` only
+  after a hand-over or on the owner's assignment, and puts
+  `Claimant: <claimant>` on a line of its own in every PR description.
+- `pr_issue_keyword`: `Refs` (default), or a closing keyword when the
+  repository's claim gate reads closing references.
+- `po_labels`: one label per PO runtime (`claude: po:claude, qwen:
+  po:qwen`). A PO dispatches only issues with its own label or none of
+  them, adds its label when it dispatches, and names its check-in and
+  handoff files with its runtime.
+- `promotion_po`: the runtime whose PO alone runs promotions (default
+  `any`).
+
+The checker validates the new keys. The gatekeeper and watchdog templates,
+the Antigravity rules and the Codex package are unchanged.
 
 ## License
 

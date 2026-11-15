@@ -21,7 +21,8 @@ the reading and writing.
 
 - Values given as `key=value` pairs in the arguments are used as given and
   never asked again (for example
-  `owner_name=Sam report_language=English project_owner=acme project_number=3 lines="Storefront,Payments"`).
+  `owner_name=Sam report_language=English project_owner=acme project_number=3 lines="Storefront,Payments"`,
+  or, for a repository with a claim lock, `claim_command="node scripts/lock.mjs <n> --status <status> --claimant <claimant>" po_labels="claude: po:claude, qwen: po:qwen"`).
   When a value read from GitHub disagrees with a given one, keep the given
   one and tell the user about the difference.
 - Any GitHub read can fail (no remote, no access, a board that does not
@@ -95,6 +96,18 @@ effort. The same goes for the wake-up keys (`po_wake`, `gatekeeper_model`,
 `gatekeeper_active_minutes`). Mention the defaults you used in the summary so the user can change
 them.
 
+The claim lock and parallel PO keys (`claim_command`, `pr_issue_keyword`,
+`po_labels`, `promotion_po`) are asked about only when the arguments or
+the user name them, or the repository's tracking document or agent
+instructions describe a per-session claim command or more than one PO.
+Then ask, in the same round or one more: the claim command as a template
+with `<n>`, `<status>`, `<claimant>` (and `<nick>` where it takes one); the
+word that ties a PR to its issue when the claim gate reads closing
+references (`Closes`); one label per PO runtime (`claude: po:claude, qwen:
+po:qwen`), and whether only one runtime's PO promotes. Write only what the
+user confirms; left out, every one keeps its default and the skills behave
+as without them. Offer to create missing `po_labels` labels as in step 4.
+
 ### 3. Read the board
 
 ```bash
@@ -147,7 +160,9 @@ sections the sample uses, with:
 - the title `# Product Owner config: <owner/repo>`, or the repository name
   alone when no remote gives the owner;
 - every value read or answered that differs from its default, and `none`
-  where the user chose to leave a key empty;
+  where the user chose to leave a key empty; the claim lock and parallel PO
+  keys, when the user gave them, under a `## Claim lock and parallel POs`
+  section after Checks and review;
 - always `report_language`, `integration_branch`, `production_branch` and
   `production_effect`, even at their defaults, so a reader sees them;
 - a Rule documents key for each such file that exists, even when it
