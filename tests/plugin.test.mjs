@@ -723,9 +723,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.14.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.14.0');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.14.0');
+test('the version is 2.14.1 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.14.1');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.14.1');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -736,6 +736,7 @@ test('the version is 2.14.0 and the README describes the gatekeeper and Antigrav
   assert.match(readme, /### Upgrading to 2\.12\.0/);
   assert.match(readme, /### Upgrading to 2\.13\.0/);
   assert.match(readme, /### Upgrading to 2\.14\.0/);
+  assert.match(readme, /### Upgrading to 2\.14\.1/);
   assert.match(readme, /The Claude app gatekeeper keeps no state file/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
@@ -1221,7 +1222,7 @@ test('the gatekeeper and watchdog restart check covers Windows, macOS and Linux 
   assert.match(readme, /The `PowerShell\(\.\.\.\)` entries are for Windows only/);
 });
 
-// 2.13.0 - 2.14.0: Antigravity's Orchestrator model choice, Antigravity agent_model clauses and flagship-tier reviews.
+// 2.13.0 - 2.14.1: Antigravity's Orchestrator model choice, Antigravity agent_model clauses and flagship-tier reviews.
 test('the Antigravity rules cover Orchestrator, inherited models, flagship tier and quota', () => {
   const rules = flatten(read('plugins/cc-po/rules/AGENTS.md').replace(/\r\n/g, '\n'));
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
@@ -1232,20 +1233,25 @@ test('the Antigravity rules cover Orchestrator, inherited models, flagship tier 
   assert.match(rules, /asks for `flash_lite`, `flash` or `pro` at or below the PO's model and the PO pins it, or asks for `inherit` on a model the PO satisfies, no mismatch is reported/);
   assert.match(rules, /report the mismatch, higher or lower, once in its digest/);
   assert.match(rules, /`Orchestrator \(Carbon\)` \(model id `gemini-pro-orchestrator`\) and `Orchestrator \(Argon\)` \(model id `gemini-pro-orchestrator-argon`\)/);
-  assert.match(rules, /answers read-only tasks \(`TypeName: "research"`, such as an independent security review or sprint audit\) directly on the lead model without exiting plan mode to Hydrogen, and may offload routine steps of execution turns \(`TypeName: "self"`\)/);
+  assert.match(rules, /prefer `TypeName: "research"`, `Model: "inherit"` for read-only tasks such as an independent security review or sprint audit so no write or shell tools are exposed/);
   assert.match(rules, /The PO does not imitate the routing by pinning `flash` or `flash_lite` for tasks it judges simple: a task that changes anything stays on `agent_model`/);
   assert.match(rules, /naming either Orchestrator id is met when the owner runs the PO on that choice; otherwise it is the mismatch case above/);
   assert.match(rules, /the PO ends it \(`manage_subagents`, `Action: "kill"`\), posts `model-exception: ended`/);
-  assert.match(rules, /`Claude Opus`, `Gemini 4 Carbon`, and `Orchestrator \(Carbon\)` \(via a fresh-context `TypeName: "research"`, `Model: "inherit"` subagent, which answers directly on Carbon without handing off to Hydrogen\) all satisfy that tier on Antigravity; a PO on Carbon or Orchestrator \(Carbon\) runs its own independent review and does not wait on Claude Opus/);
-  assert.match(rules, /Whenever the reviewer's actual model \(or review subagent, for example running a security review as `TypeName: "self"` under Orchestrator instead of `TypeName: "research"`\) does not satisfy the required tier, configured `Antigravity:` equivalent, or single-vendor pinned model, the PO does not count that work as done/);
+  assert.match(rules, /`Claude Opus` and `Gemini 4 Carbon` satisfy that tier with zero delegation to a smaller model, and `Orchestrator \(Carbon\)` \(via a fresh-context `TypeName: "research"`, `Model: "inherit"` subagent\) satisfies it too unless the repository's rules forbid routing substeps to Hydrogen on that gate/);
+  assert.match(rules, /Whenever the reviewer's actual model \(or review subagent, for example running a security review as `TypeName: "self"` under Orchestrator instead of `TypeName: "research"`, or running on Orchestrator when the repository forbids Hydrogen delegation on that review\) does not satisfy the required tier, configured `Antigravity:` equivalent, or single-vendor pinned model, the PO does not count that work as done/);
   assert.match(rules, /holds the gate \(the PR does not merge\) until a qualifying model runs the review or the owner accepts the substitute for that PR/);
   assert.match(rules, /That failure is not the model error the skill's retry-once-without-`model` rule covers/);
   assert.match(rules, /never retries in a loop and never moves the work to another model on its own/);
   assert.match(rules, /Which model a sub-session gets, Orchestrator included: "Models and Orchestrator" below/);
+  assert.match(rules, /Skip session effort reconciliation and effort exceptions silently \(they need no owner action\)/);
+  assert.doesNotMatch(rules, /Skip session effort reconciliation and effort exceptions, and note that once/);
+  assert.match(rules, /Turbo/);
+  assert.match(rules, /do not ask the owner to configure a Command Allowlist when commands already execute cleanly/);
+  assert.match(rules, /sidecar_data\/<sidecar id>\/logs\/sidecar\.log.*sidecars\["<sidecar id>"\]\.enabled === true.*current Antigravity server start or OS boot time.*`Scheduler started` without a later stop or failure/);
   assert.match(schema, /A parenthesized `Antigravity:` note after the model id may state what Antigravity sessions use/);
   assert.match(schema, /state PO and security-review requirements by capability tier \(a flagship model\)/);
   assert.match(readme, /Sub-sessions inherit the PO's model unless `agent_model` \(or an `Antigravity:` note on it\) pins `flash_lite`, `flash` or `pro`/);
-  assert.match(readme, /flagship-tier security reviews run on `Claude Opus`, `Gemini 4 Carbon` or `Orchestrator \(Carbon\)`/);
+  assert.match(readme, /flagship-tier security reviews run on `Claude Opus`, `Gemini 4 Carbon`, or `Orchestrator \(Carbon\)`/);
   assert.match(readme, /Whenever the actual reviewer does not satisfy the required tier, `Antigravity:` equivalent, or single-vendor pinned model, the PR does not merge until a qualifying model runs the review or the owner accepts the substitute/);
   const sharedConfig = read('plugins/cc-po/skills/setup/sample-config.md')
     .replace('- agent_model: claude-sonnet-5-5', '- agent_model: claude-sonnet-5-5 (Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)');

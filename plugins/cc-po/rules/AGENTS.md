@@ -18,12 +18,12 @@ unchanged.
 | `SendMessage`, `mcp__ccd_session_mgmt__send_message` (`to`: a session id) | Use the `send_message` tool (`Recipient`: `<conversationId>`) between a PO and its in-process sub-session subagents (sending a message to an idle or restart-stopped subagent also wakes and resumes it in place). Across separate top-level PO conversations, try `send_message` first and fall back to `agentapi send-message "<conversationId>" "<message>"` via `run_command` if refused. |
 | `list_sessions` (`linked: true`), `mcp__ccd_session_mgmt__get_session` | For sub-sessions, call `manage_subagents` (`Action: "list"`) to read each direct subagent's `conversationId` and live state, and read `<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl` when inspecting a subagent's recent turns. Record each sub-session's `conversationId` in its issue's `claim:` comment and in the PO's check-in or handoff file so it survives restarts. For top-level PO conversations, no global list exists; inspect a known id with `agentapi get-conversation-metadata <conversationId>` (carries no `lastActivityAt`). |
 | `mcp__ccd_session_mgmt__archive_session` | Sub-session subagents live inside the PO's Subagents pane rather than the left sidebar, so finished subagents need no archive call (record completion in the check-in file; use `manage_subagents` with `Action: "kill"` only to terminate a stuck running subagent). Top-level conversations have no archive API; the owner archives retired PO conversations from the sidebar. |
-| `set_session_model`, `set_session_effort`, `agent_model`, `agent_effort`, `subagent_effort` | Running conversations and subagents keep their initial model, and Antigravity has no session effort API. Skip session effort reconciliation and effort exceptions, and note that once in the PO's digest. Which model a sub-session gets, Orchestrator included: "Models and Orchestrator" below. Keep `-c model_reasoning_effort=<subagent_effort>` on `codex review` when `local_reviews` uses Codex CLI. |
+| `set_session_model`, `set_session_effort`, `agent_model`, `agent_effort`, `subagent_effort` | Running conversations and subagents keep their initial model, and Antigravity has no session effort API. Skip session effort reconciliation and effort exceptions silently (they need no owner action). Which model a sub-session gets, Orchestrator included: "Models and Orchestrator" below. Keep `-c model_reasoning_effort=<subagent_effort>` on `codex review` when `local_reviews` uses Codex CLI. |
 | `bind_pr`, `get_status`, `set_monitor` (`pr_monitor`), `create_group`, `move_sessions` (`sidebar_groups`) | Antigravity has no PR bar and no sidebar groups: ignore `pr_monitor` and `sidebar_groups`. Sub-sessions check a PR's CI once per resume with `gh pr checks` (a background `--watch`, see below, when it needs waiting) and the PO nudges them as before. |
 | The Agent tool (in-process subagent) | `invoke_subagent`: `TypeName: "research"` for read-only work (such as the sprint review's audit or a fresh-context review), `TypeName: "self"` for work that writes, `Model: "inherit"`. |
 | `AskUserQuestion` | `ask_question`. |
 | `CronCreate`, `/loop`, a check-in inside the session | The `schedule` tool with a `CronExpression` (used only under `po_wake: watchdog`; under `po_wake: gatekeeper` keep no in-session check-in cron once the gatekeeper sidecar is enabled, and cancel any active one with `manage_task`, `Action: "kill"`). Stops when the server restarts, like `CronCreate`. |
-| `create_scheduled_task`, `list_scheduled_tasks`, `update_scheduled_task` (`po_wake: gatekeeper` and `po_wake: watchdog`) | Under `po_wake: gatekeeper` (the default), keep **one** shared scheduled automation per repository at `~/.gemini/config/sidecars/<repo owner>-<repo>-po-gatekeeper/sidecar.json` (`"builtin": "schedule"`, `"restart_policy": "always"`, `"display_name": "PO gatekeeper (<owner/repo>)"`, and `"args": ["CRON_TZ=<IANA zone> <m>,<m+30> * * * *", "<absolute node path>", "<absolute plugin path>/skills/product-owner/agy-gatekeeper.mjs", "<po_check_in_dir>/<repo owner>-<repo>-agy-gatekeeper.json"]`, using absolute paths for `node`, `agy-gatekeeper.mjs` and the JSON config). The JSON config holds `{ "repo": "<owner/repo>", "owner": "<owner_name>", "language": "<report_language>", "activeMinutes": <gatekeeper_active_minutes>, "pos": [{ "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }] }` (use `"labels": [...]` when a line owns multiple labels). `agy-gatekeeper.mjs` runs every 30 minutes without spawning sidebar conversations or spending model tokens: it inspects all registered POs of `<owner/repo>` and their in-flight subagents from local transcripts, runs the read-only restart check and `gh pr list`, wakes every PO that is not running when a restart came after its last activity, an open ready PR carrying its own line label is newer than its last activity, or its last activity is `gatekeeper_active_minutes` old, whether or not its line has work in flight (it names every reason that holds, lists the ready PRs and idle subagents, and sends no context notice: a PO's context needs no owner action), via `agentapi send-message`, and keeps no state file. The first PO of `<owner/repo>` creates the sidecar and JSON config; every other PO registers or updates its row in `pos` and tells the owner in its digest to switch off any older per-PO `-po-watchdog` sidecar. Under `po_wake: watchdog`, create a per-PO 15-minute sidecar (`<m>,<m+15>,<m+30>,<m+45> * * * *`) calling `agentapi send-message "<PO conversationId>" "<wake message>"`. Inspect `~/.gemini/config/sidecars/` in place of `list_scheduled_tasks`. Only the owner enables or disables automations in `[Open Automations Dashboard](sidecar://dashboard)`; never edit `user_config.json` yourself. Without an enabled gatekeeper automation, say in the digest that the PO has no durable wake automation. |
+| `create_scheduled_task`, `list_scheduled_tasks`, `update_scheduled_task` (`po_wake: gatekeeper` and `po_wake: watchdog`) | Under `po_wake: gatekeeper` (the default), keep **one** shared scheduled automation per repository at `~/.gemini/config/sidecars/<repo owner>-<repo>-po-gatekeeper/sidecar.json` (`"builtin": "schedule"`, `"restart_policy": "always"`, `"display_name": "PO gatekeeper (<owner/repo>)"`, and `"args": ["CRON_TZ=<IANA zone> <m>,<m+30> * * * *", "<absolute node path>", "<absolute plugin path>/skills/product-owner/agy-gatekeeper.mjs", "<po_check_in_dir>/<repo owner>-<repo>-agy-gatekeeper.json"]`, using absolute paths for `node`, `agy-gatekeeper.mjs` and the JSON config). The JSON config holds `{ "repo": "<owner/repo>", "owner": "<owner_name>", "language": "<report_language>", "activeMinutes": <gatekeeper_active_minutes>, "pos": [{ "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }] }` (use `"labels": [...]` when a line owns multiple labels). `agy-gatekeeper.mjs` runs every 30 minutes without spawning sidebar conversations or spending model tokens: it inspects all registered POs of `<owner/repo>` and their in-flight subagents from local transcripts, runs the read-only restart check and `gh pr list`, wakes every PO that is not running when a restart came after its last activity, an open ready PR carrying its own line label is newer than its last activity, or its last activity is `gatekeeper_active_minutes` old, whether or not its line has work in flight (it names every reason that holds, lists the ready PRs and idle subagents, and sends no context notice: a PO's context needs no owner action), via `agentapi send-message`, and keeps no state file. The first PO of `<owner/repo>` creates the sidecar and JSON config; every other PO registers or updates its row in `pos` and tells the owner in its digest to switch off any older per-PO `-po-watchdog` sidecar. Under `po_wake: watchdog`, create a per-PO 15-minute sidecar (`<m>,<m+15>,<m+30>,<m+45> * * * *`) calling `agentapi send-message "<PO conversationId>" "<wake message>"`. Inspect `~/.gemini/config/sidecars/`, `~/.gemini/config/config.json` (read-only; never edit `user_config.json` or `config.json` yourself) and `<appDataDir>/sidecar_data/<sidecar id>/logs/sidecar.log` in place of `list_scheduled_tasks`. Only the owner enables or disables automations in `[Open Automations Dashboard](sidecar://dashboard)`. Treat the automation as active only when `sidecars["<sidecar id>"].enabled === true` in `~/.gemini/config/config.json` AND the latest start block in `sidecar.log` (at or after the current Antigravity server start or OS boot time) shows `Scheduler started` without a later stop or failure; otherwise report in the digest that the PO has no durable wake automation and point the owner to the dashboard. |
 | Watching CI (Monitor, `gh pr checks --watch`) | `run_command` in the background (short `WaitMsBeforeAsync`, e.g. `500`, `IsDaemon: false`): Antigravity wakes the conversation when the command finishes. Never poll in a loop. |
 | Renaming the session to `<Line> Product Owner` | A running conversation cannot rename itself (unless started via `agentapi new-conversation --title="<Line> Product Owner"`). State `<Line> Product Owner` in `claim:` comments, the check-in file and the first line of each report. |
 | "The owner's next desktop turn" | The owner's next message in the PO's conversation. |
@@ -49,20 +49,20 @@ unchanged.
 - **Orchestrator.** The picker's `Orchestrator (Carbon)` (model id
   `gemini-pro-orchestrator`) and `Orchestrator (Argon)` (model id
   `gemini-pro-orchestrator-argon`) are each one model choice: Gemini 4 Carbon
-  (or Argon) leads in plan mode, answers read-only tasks (`TypeName:
-  "research"`, such as an independent security review or sprint audit)
-  directly on the lead model without exiting plan mode to Hydrogen, and may
-  offload routine steps of execution turns (`TypeName: "self"`) to Gemini 4
-  Hydrogen when edits or commands are needed. A PO the owner runs on
-  Orchestrator needs nothing more: its sub-sessions inherit it, so each worker
-  routes its own steps while read-only `research` reviewers stay on the lead
-  model. The PO does not imitate the routing by pinning `flash` or
-  `flash_lite` for tasks it judges simple: a task that changes anything
-  stays on `agent_model`. An `agent_model` (or `Antigravity:` clause) naming
-  either Orchestrator id is met when the owner runs the PO on that choice;
-  otherwise it is the mismatch case above. How Orchestrator, Carbon, Argon
-  and `pro` rank against each other for the rule that `agent_model` is not
-  higher than the PO's model is the owner's decision, recorded in the
+  (or Argon) leads in plan mode and may offload routine execution steps to
+  Gemini 4 Hydrogen (prefer `TypeName: "research"`, `Model: "inherit"` for
+  read-only tasks such as an independent security review or sprint audit so no
+  write or shell tools are exposed, noting that Orchestrator may still route
+  routine substeps to Hydrogen unless the conversation runs on direct
+  `Gemini 4 Carbon` or `Claude Opus`). A PO the owner runs on Orchestrator
+  needs nothing more for routine work: its sub-sessions inherit it, so each
+  worker routes its own steps. The PO does not imitate the routing by pinning
+  `flash` or `flash_lite` for tasks it judges simple: a task that changes
+  anything stays on `agent_model`. An `agent_model` (or `Antigravity:` clause)
+  naming either Orchestrator id is met when the owner runs the PO on that
+  choice; otherwise it is the mismatch case above. How Orchestrator, Carbon,
+  Argon and `pro` rank against each other for the rule that `agent_model` is
+  not higher than the PO's model is the owner's decision, recorded in the
   config's note; without one, the PO treats an unlisted difference as a
   mismatch and reports it.
 - **Model exceptions.** A read-only lookup the `product-owner` skill lets
@@ -76,18 +76,20 @@ unchanged.
   (a flagship model, or at least as capable as the PO's model as in the
   `product-owner` skill) rather than hardcoding one vendor's model. Where the
   config or instructions ask for a flagship model (for example for POs and
-  independent security reviews of protected paths), `Claude Opus`, `Gemini 4
-  Carbon`, and `Orchestrator (Carbon)` (via a fresh-context `TypeName:
-  "research"`, `Model: "inherit"` subagent, which answers directly on Carbon
-  without handing off to Hydrogen) all satisfy that tier on Antigravity; a PO
-  on Carbon or Orchestrator (Carbon) runs its own independent review and does
-  not wait on Claude Opus. Whenever the reviewer's actual model (or review
+  independent security reviews of protected paths), `Claude Opus` and
+  `Gemini 4 Carbon` satisfy that tier with zero delegation to a smaller model,
+  and `Orchestrator (Carbon)` (via a fresh-context `TypeName: "research"`,
+  `Model: "inherit"` subagent) satisfies it too unless the repository's rules
+  forbid routing substeps to Hydrogen on that gate; when satisfied, a PO on
+  Carbon or Orchestrator (Carbon) runs its own independent review and does not
+  wait on Claude Opus. Whenever the reviewer's actual model (or review
   subagent, for example running a security review as `TypeName: "self"`
-  under Orchestrator instead of `TypeName: "research"`) does not satisfy the
-  required tier, configured `Antigravity:` equivalent, or single-vendor
-  pinned model, the PO does not count that work as done: it may run an
-  independent review on the model it has, writes in the PR which model ran
-  it, and holds the gate (the PR does not merge) until a qualifying model
+  under Orchestrator instead of `TypeName: "research"`, or running on
+  Orchestrator when the repository forbids Hydrogen delegation on that review)
+  does not satisfy the required tier, configured `Antigravity:` equivalent, or
+  single-vendor pinned model, the PO does not count that work as done: it may
+  run an independent review on the model it has, writes in the PR which model
+  ran it, and holds the gate (the PR does not merge) until a qualifying model
   runs the review or the owner accepts the substitute for that PR.
 - **Quota.** Each model has its own quota (Orchestrator's included), shown
   under `View Usage` in the picker. A start or turn on a model whose quota is
@@ -107,11 +109,15 @@ unchanged.
   prefix-matchable command shapes (no command substitutions or wrapper
   binaries), so one "always allow" or Command Allowlist rule from the owner
   covers future calls.
-- On the first turn a PO needs network or `agentapi` commands on a machine
-  (or if terminal sandbox / internet policy blocks them), tell the owner once
-  which command prefixes to allow in Settings -> Permission Grants / Command
-  Allowlist: `agentapi`, `gh`, `git fetch`, `git push`, `git ls-remote`.
-  Without them, every call waits for manual approval.
+- When the owner runs Antigravity in **Turbo** terminal execution mode (or has
+  already granted command permissions), network and `agentapi` commands run
+  without prompting: do not ask the owner to configure a Command Allowlist
+  when commands already execute cleanly. Only if a `run_command` call pauses
+  for manual approval or is refused by terminal permission / sandbox policy,
+  tell the owner once that they can either switch Terminal Execution Policy to
+  **Turbo** or allow these single-command prefixes in Settings -> Permission
+  Grants / Command Allowlist: `agentapi`, `gh`, `git fetch`, `git push`,
+  `git ls-remote`.
 
 ## Restarts
 
