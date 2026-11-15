@@ -1227,17 +1227,18 @@ test('the Antigravity rules cover Orchestrator, inherited models, flagship tier 
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   const schema = flatten(read('plugins/cc-po/skills/product-owner/config-schema.md').replace(/\r\n/g, '\n'));
   assert.match(rules, /## Models and Orchestrator/);
+  assert.match(rules, /\(unless `agent_model`, an `Antigravity:` clause in its note, or a `Model exception` names `flash_lite`, `flash` or `pro`; see "Models and Orchestrator" below\)/);
   assert.match(rules, /`invoke_subagent` can pin only `flash_lite`, `flash` or `pro`, so a sub-session runs on that model when `agent_model` \(or an `Antigravity:` clause in `agent_model`'s parenthesized note\) names one of them, and on the PO's own model \(`Model: "inherit"`\) otherwise/);
-  assert.match(rules, /when the PO runs on a model that satisfies it, `Model: "inherit"` meets the config and no mismatch is reported/);
+  assert.match(rules, /asks for `flash_lite`, `flash` or `pro` at or below the PO's model and the PO pins it, or asks for `inherit` on a model the PO satisfies, no mismatch is reported/);
   assert.match(rules, /report the mismatch, higher or lower, once in its digest/);
   assert.match(rules, /`Orchestrator \(Carbon\)` \(model id `gemini-pro-orchestrator`\) and `Orchestrator \(Argon\)` \(model id `gemini-pro-orchestrator-argon`\)/);
-  assert.match(rules, /answers read-only tasks \(`TypeName: "research"`, such as an independent security review or sprint audit\) directly on the lead model without exiting plan mode to Hydrogen/);
+  assert.match(rules, /answers read-only tasks \(`TypeName: "research"`, such as an independent security review or sprint audit\) directly on the lead model without exiting plan mode to Hydrogen, and may offload routine steps of execution turns \(`TypeName: "self"`\)/);
   assert.match(rules, /The PO does not imitate the routing by pinning `flash` or `flash_lite` for tasks it judges simple: a task that changes anything stays on `agent_model`/);
   assert.match(rules, /naming either Orchestrator id is met when the owner runs the PO on that choice; otherwise it is the mismatch case above/);
   assert.match(rules, /the PO ends it \(`manage_subagents`, `Action: "kill"`\), posts `model-exception: ended`/);
   assert.match(rules, /`Claude Opus`, `Gemini 4 Carbon`, and `Orchestrator \(Carbon\)` \(via a fresh-context `TypeName: "research"`, `Model: "inherit"` subagent, which answers directly on Carbon without handing off to Hydrogen\) all satisfy that tier on Antigravity; a PO on Carbon or Orchestrator \(Carbon\) runs its own independent review and does not wait on Claude Opus/);
-  assert.match(rules, /Only where the config or instructions pin one specific vendor model with no tier rule and no `Antigravity:` equivalent does a PO on another model not count that work as done/);
-  assert.match(rules, /and holds the gate \(the PR does not merge\) until the review runs on the named model or the owner accepts the substitute for that PR/);
+  assert.match(rules, /Whenever the reviewer's actual model \(or review subagent, for example running a security review as `TypeName: "self"` under Orchestrator instead of `TypeName: "research"`\) does not satisfy the required tier, configured `Antigravity:` equivalent, or single-vendor pinned model, the PO does not count that work as done/);
+  assert.match(rules, /holds the gate \(the PR does not merge\) until a qualifying model runs the review or the owner accepts the substitute for that PR/);
   assert.match(rules, /That failure is not the model error the skill's retry-once-without-`model` rule covers/);
   assert.match(rules, /never retries in a loop and never moves the work to another model on its own/);
   assert.match(rules, /Which model a sub-session gets, Orchestrator included: "Models and Orchestrator" below/);
@@ -1245,5 +1246,8 @@ test('the Antigravity rules cover Orchestrator, inherited models, flagship tier 
   assert.match(schema, /state PO and security-review requirements by capability tier \(a flagship model\)/);
   assert.match(readme, /Sub-sessions inherit the PO's model unless `agent_model` \(or an `Antigravity:` note on it\) pins `flash_lite`, `flash` or `pro`/);
   assert.match(readme, /flagship-tier security reviews run on `Claude Opus`, `Gemini 4 Carbon` or `Orchestrator \(Carbon\)`/);
-  assert.match(readme, /the PR does not merge until that review runs on the named model or the owner accepts the substitute/);
+  assert.match(readme, /Whenever the actual reviewer does not satisfy the required tier, `Antigravity:` equivalent, or single-vendor pinned model, the PR does not merge until a qualifying model runs the review or the owner accepts the substitute/);
+  const sharedConfig = read('plugins/cc-po/skills/setup/sample-config.md')
+    .replace('- agent_model: claude-sonnet-5-5', '- agent_model: claude-sonnet-5-5 (Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)');
+  assert.deepEqual(checkConfig(sharedConfig), { errors: [], warnings: [] });
 });

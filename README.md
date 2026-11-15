@@ -690,19 +690,23 @@ vendor's model id:
   `claude-sonnet-5-5 (Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)`).
   When the Antigravity PO runs a model that matches the clause, `Model:
   "inherit"` satisfies the config with no false mismatch warning.
-- Under `Orchestrator (Carbon)` (`gemini-pro-orchestrator`), read-only
-  `TypeName: "research"` subagents answer directly on Carbon in plan mode
-  without handing off to Hydrogen.
+- Under `Orchestrator (Carbon)` (`gemini-pro-orchestrator`) and `Orchestrator
+  (Argon)` (`gemini-pro-orchestrator-argon`), read-only `TypeName:
+  "research"` subagents answer directly on the lead model in plan mode
+  without handing off to Hydrogen, while `TypeName: "self"` execution turns
+  may offload routine steps to Hydrogen.
 - Where repository rules or config ask for a flagship model (such as PO
   sessions and independent security reviews of protected paths), `Claude
   Opus`, `Gemini 4 Carbon` and `Orchestrator (Carbon)` (`TypeName:
   "research"`) all satisfy that tier on Antigravity, so a Carbon or
   Orchestrator (Carbon) PO runs its own independent security review without
-  waiting on Claude Opus. Single-vendor pinned reviews with no tier rule
-  still block merge until met or owner-accepted.
+  waiting on Claude Opus. Whenever the actual reviewer does not satisfy the
+  required tier, `Antigravity:` equivalent, or single-vendor pinned model,
+  the PR does not merge until a qualifying model runs the review or the owner
+  accepts the substitute.
 
-Copy the updated `plugins/cc-po` into the Antigravity plugin folder again
-and restart Antigravity.
+Update the plugin in Claude Code (`claude plugin update`) or copy the updated
+`plugins/cc-po` into the Antigravity plugin folder and restart Antigravity.
 
 ## License
 

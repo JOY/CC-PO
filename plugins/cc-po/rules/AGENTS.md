@@ -14,7 +14,7 @@ unchanged.
 
 | The skill says | On Antigravity |
 | --- | --- |
-| `start_session` (a sub-session with a fresh context) | Call `invoke_subagent` with `TypeName: "self"`, `Role: "#<n> <short title>"`, `Prompt: "<brief>"`, `Workspace: "inherit"`, and `Model: "inherit"` (unless `agent_model` names `flash_lite`, `flash` or `pro`, the only overrides `invoke_subagent` accepts). Include the PO's own `conversationId` in the brief so the sub-session can message the PO with `send_message`, and state in the brief's **Environment** section that the sub-session must create and work inside its own git worktree (following the repository's worktree rule, or `.agents/worktrees/<task>` if none) from `origin/<integration_branch>` before editing any file, and remove it after merging. `invoke_subagent` works in every turn (owner turns, subagent replies and gatekeeper wakes) and keeps worker sub-sessions inside the PO's Subagents pane instead of cluttering the left-hand sidebar. Reserve `agentapi new-conversation --title="<Line> Product Owner" -- "<brief>"` for starting a top-level PO conversation, never for worker sub-sessions. |
+| `start_session` (a sub-session with a fresh context) | Call `invoke_subagent` with `TypeName: "self"`, `Role: "#<n> <short title>"`, `Prompt: "<brief>"`, `Workspace: "inherit"`, and `Model: "inherit"` (unless `agent_model`, an `Antigravity:` clause in its note, or a `Model exception` names `flash_lite`, `flash` or `pro`; see "Models and Orchestrator" below). Include the PO's own `conversationId` in the brief so the sub-session can message the PO with `send_message`, and state in the brief's **Environment** section that the sub-session must create and work inside its own git worktree (following the repository's worktree rule, or `.agents/worktrees/<task>` if none) from `origin/<integration_branch>` before editing any file, and remove it after merging. `invoke_subagent` works in every turn (owner turns, subagent replies and gatekeeper wakes) and keeps worker sub-sessions inside the PO's Subagents pane instead of cluttering the left-hand sidebar. Reserve `agentapi new-conversation --title="<Line> Product Owner" -- "<brief>"` for starting a top-level PO conversation, never for worker sub-sessions. |
 | `SendMessage`, `mcp__ccd_session_mgmt__send_message` (`to`: a session id) | Use the `send_message` tool (`Recipient`: `<conversationId>`) between a PO and its in-process sub-session subagents (sending a message to an idle or restart-stopped subagent also wakes and resumes it in place). Across separate top-level PO conversations, try `send_message` first and fall back to `agentapi send-message "<conversationId>" "<message>"` via `run_command` if refused. |
 | `list_sessions` (`linked: true`), `mcp__ccd_session_mgmt__get_session` | For sub-sessions, call `manage_subagents` (`Action: "list"`) to read each direct subagent's `conversationId` and live state, and read `<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl` when inspecting a subagent's recent turns. Record each sub-session's `conversationId` in its issue's `claim:` comment and in the PO's check-in or handoff file so it survives restarts. For top-level PO conversations, no global list exists; inspect a known id with `agentapi get-conversation-metadata <conversationId>` (carries no `lastActivityAt`). |
 | `mcp__ccd_session_mgmt__archive_session` | Sub-session subagents live inside the PO's Subagents pane rather than the left sidebar, so finished subagents need no archive call (record completion in the check-in file; use `manage_subagents` with `Action: "kill"` only to terminate a stuck running subagent). Top-level conversations have no archive API; the owner archives retired PO conversations from the sidebar. |
@@ -38,30 +38,33 @@ unchanged.
   note) names one of them, and on the PO's own model (`Model: "inherit"`)
   otherwise. When `agent_model` carries an `Antigravity:` clause (such as
   `(Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)`),
-  Antigravity reads that clause in place of a Claude model id: when the PO
-  runs on a model that satisfies it, `Model: "inherit"` meets the config and
-  no mismatch is reported. Only when neither `agent_model` nor an
-  `Antigravity:` clause matches what Antigravity runs does the PO report the
-  mismatch, higher or lower, once in its digest. It does not ask the owner to
-  switch models in the middle of a task.
+  Antigravity reads that clause in place of a Claude model id. When the
+  clause (or `agent_model` itself) asks for `flash_lite`, `flash` or `pro`
+  at or below the PO's model and the PO pins it, or asks for `inherit` on a
+  model the PO satisfies, no mismatch is reported. Only when neither
+  `agent_model` nor an `Antigravity:` clause matches what Antigravity
+  actually runs (or asks for an override above the PO's model) does the PO
+  report the mismatch, higher or lower, once in its digest. It does not ask
+  the owner to switch models in the middle of a task.
 - **Orchestrator.** The picker's `Orchestrator (Carbon)` (model id
   `gemini-pro-orchestrator`) and `Orchestrator (Argon)` (model id
   `gemini-pro-orchestrator-argon`) are each one model choice: Gemini 4 Carbon
   (or Argon) leads in plan mode, answers read-only tasks (`TypeName:
   "research"`, such as an independent security review or sprint audit)
-  directly on the lead model without exiting plan mode to Hydrogen, and
-  hands execution turns (`TypeName: "self"`) to Gemini 4 Hydrogen when edits
-  or commands are needed. A PO the owner runs on Orchestrator needs nothing
-  more: its sub-sessions inherit it, so each worker routes its own steps
-  while read-only `research` reviewers stay on the lead model. The PO does
-  not imitate the routing by pinning `flash` or `flash_lite` for tasks it
-  judges simple: a task that changes anything stays on `agent_model`. An
-  `agent_model` (or `Antigravity:` clause) naming either Orchestrator id is
-  met when the owner runs the PO on that choice; otherwise it is the mismatch
-  case above. How Orchestrator, Carbon, Argon and `pro` rank against each
-  other for the rule that `agent_model` is not higher than the PO's model is
-  the owner's decision, recorded in the config's note; without one, the PO
-  treats an unlisted difference as a mismatch and reports it.
+  directly on the lead model without exiting plan mode to Hydrogen, and may
+  offload routine steps of execution turns (`TypeName: "self"`) to Gemini 4
+  Hydrogen when edits or commands are needed. A PO the owner runs on
+  Orchestrator needs nothing more: its sub-sessions inherit it, so each worker
+  routes its own steps while read-only `research` reviewers stay on the lead
+  model. The PO does not imitate the routing by pinning `flash` or
+  `flash_lite` for tasks it judges simple: a task that changes anything
+  stays on `agent_model`. An `agent_model` (or `Antigravity:` clause) naming
+  either Orchestrator id is met when the owner runs the PO on that choice;
+  otherwise it is the mismatch case above. How Orchestrator, Carbon, Argon
+  and `pro` rank against each other for the rule that `agent_model` is not
+  higher than the PO's model is the owner's decision, recorded in the
+  config's note; without one, the PO treats an unlisted difference as a
+  mismatch and reports it.
 - **Model exceptions.** A read-only lookup the `product-owner` skill lets
   run cheaper names `flash_lite` or `flash`, the only cheaper models
   `invoke_subagent` can pin. A subagent cannot be moved to another model, so
@@ -78,12 +81,14 @@ unchanged.
   "research"`, `Model: "inherit"` subagent, which answers directly on Carbon
   without handing off to Hydrogen) all satisfy that tier on Antigravity; a PO
   on Carbon or Orchestrator (Carbon) runs its own independent review and does
-  not wait on Claude Opus. Only where the config or instructions pin one
-  specific vendor model with no tier rule and no `Antigravity:` equivalent
-  does a PO on another model not count that work as done: it may run an
+  not wait on Claude Opus. Whenever the reviewer's actual model (or review
+  subagent, for example running a security review as `TypeName: "self"`
+  under Orchestrator instead of `TypeName: "research"`) does not satisfy the
+  required tier, configured `Antigravity:` equivalent, or single-vendor
+  pinned model, the PO does not count that work as done: it may run an
   independent review on the model it has, writes in the PR which model ran
-  it, and holds the gate (the PR does not merge) until the review runs on the
-  named model or the owner accepts the substitute for that PR.
+  it, and holds the gate (the PR does not merge) until a qualifying model
+  runs the review or the owner accepts the substitute for that PR.
 - **Quota.** Each model has its own quota (Orchestrator's included), shown
   under `View Usage` in the picker. A start or turn on a model whose quota is
   used up fails. That failure is not the model error the skill's
