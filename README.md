@@ -108,10 +108,14 @@ What stays the same and what differs on Antigravity:
   subagents keep their initial model, and session effort reconciliation is
   skipped (Codex CLI reviews still receive
   `-c model_reasoning_effort=<subagent_effort>`). Sub-sessions inherit the
-  PO's model unless `agent_model` pins `flash_lite`, `flash` or `pro`, so a
-  PO the owner runs on `Orchestrator (Carbon)` or `Orchestrator (Argon)` gets
-  Orchestrator's own routing to Hydrogen in every sub-session; work the config ties to a named model (such as a
-  security review) is not counted done on another model ("Models and
+  PO's model unless `agent_model` (or an `Antigravity:` note on it) pins
+  `flash_lite`, `flash` or `pro`, so a PO the owner runs on `Orchestrator
+  (Carbon)` or `Orchestrator (Argon)` gets Orchestrator's own routing to
+  Hydrogen in every worker while read-only `research` reviewers answer on
+  the lead model. When `agent_model` includes an `Antigravity:` note that
+  matches what Antigravity runs, no mismatch is reported; flagship-tier
+  security reviews run on `Claude Opus`, `Gemini 4 Carbon` or `Orchestrator
+  (Carbon)` (`TypeName: "research"`) without waiting on Opus ("Models and
   Orchestrator" in `rules/AGENTS.md`). Under `po_wake: gatekeeper`
   (the default), each repository keeps one shared Antigravity scheduled
   automation (`<repo owner>-<repo>-po-gatekeeper`) running
@@ -670,6 +674,32 @@ the same conversation. The section says:
 - When a model's quota is used up, the PO reports it once and waits for the
   owner; it never retries in a loop or moves the work to another model, and
   the skill's retry-once-without-`model` rule does not apply.
+
+Copy the updated `plugins/cc-po` into the Antigravity plugin folder again
+and restart Antigravity.
+
+### Upgrading to 2.14.0
+
+No required config change. Shared boards across Claude Code and Antigravity
+can now describe PO, security-review and worker models by generic capability
+tier (flagship vs worker) and per-host mapping instead of hardcoding one
+vendor's model id:
+
+- `config-schema.md` (`agent_model`) and `rules/AGENTS.md` support an
+  `Antigravity:` clause in `agent_model`'s parenthesized note (for example
+  `claude-sonnet-5-5 (Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)`).
+  When the Antigravity PO runs a model that matches the clause, `Model:
+  "inherit"` satisfies the config with no false mismatch warning.
+- Under `Orchestrator (Carbon)` (`gemini-pro-orchestrator`), read-only
+  `TypeName: "research"` subagents answer directly on Carbon in plan mode
+  without handing off to Hydrogen.
+- Where repository rules or config ask for a flagship model (such as PO
+  sessions and independent security reviews of protected paths), `Claude
+  Opus`, `Gemini 4 Carbon` and `Orchestrator (Carbon)` (`TypeName:
+  "research"`) all satisfy that tier on Antigravity, so a Carbon or
+  Orchestrator (Carbon) PO runs its own independent security review without
+  waiting on Claude Opus. Single-vendor pinned reviews with no tier rule
+  still block merge until met or owner-accepted.
 
 Copy the updated `plugins/cc-po` into the Antigravity plugin folder again
 and restart Antigravity.

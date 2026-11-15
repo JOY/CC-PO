@@ -34,44 +34,56 @@ unchanged.
   app's model picker, and a running conversation and its subagents keep it;
   no config value can change it. `invoke_subagent` can pin only
   `flash_lite`, `flash` or `pro`, so a sub-session runs on that model when
-  `agent_model` names one of them, and on the PO's own model (`Model:
-  "inherit"`) otherwise. When `agent_model` names a model other than those
-  three and the PO's own (a Claude id such as `claude-sonnet-5-5` while the
-  PO runs on Gemini, or `claude-sonnet-5-5` while it runs on Claude Opus),
-  the PO starts sub-sessions with `inherit` and reports the mismatch, higher
-  or lower, once in its digest. It does not ask the owner to switch models in
-  the middle of a task.
+  `agent_model` (or an `Antigravity:` clause in `agent_model`'s parenthesized
+  note) names one of them, and on the PO's own model (`Model: "inherit"`)
+  otherwise. When `agent_model` carries an `Antigravity:` clause (such as
+  `(Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)`),
+  Antigravity reads that clause in place of a Claude model id: when the PO
+  runs on a model that satisfies it, `Model: "inherit"` meets the config and
+  no mismatch is reported. Only when neither `agent_model` nor an
+  `Antigravity:` clause matches what Antigravity runs does the PO report the
+  mismatch, higher or lower, once in its digest. It does not ask the owner to
+  switch models in the middle of a task.
 - **Orchestrator.** The picker's `Orchestrator (Carbon)` (model id
   `gemini-pro-orchestrator`) and `Orchestrator (Argon)` (model id
   `gemini-pro-orchestrator-argon`) are each one model choice: Gemini 4 Carbon
-  (or Argon) leads and may hand routine steps to Gemini 4 Hydrogen inside the
-  same conversation. A PO the owner runs on Orchestrator needs nothing more:
-  its sub-sessions inherit it, so each one routes its own steps. The PO does
+  (or Argon) leads in plan mode, answers read-only tasks (`TypeName:
+  "research"`, such as an independent security review or sprint audit)
+  directly on the lead model without exiting plan mode to Hydrogen, and
+  hands execution turns (`TypeName: "self"`) to Gemini 4 Hydrogen when edits
+  or commands are needed. A PO the owner runs on Orchestrator needs nothing
+  more: its sub-sessions inherit it, so each worker routes its own steps
+  while read-only `research` reviewers stay on the lead model. The PO does
   not imitate the routing by pinning `flash` or `flash_lite` for tasks it
   judges simple: a task that changes anything stays on `agent_model`. An
-  `agent_model` naming either Orchestrator id is met only when the owner runs
-  the PO on that choice; otherwise it is the mismatch case above. How
-  Orchestrator, Carbon, Argon and `pro` rank against each other for the rule
-  that `agent_model` is not higher than the PO's model is the owner's
-  decision, recorded in the config's note; without one, the PO treats any
-  difference as a mismatch and reports it.
+  `agent_model` (or `Antigravity:` clause) naming either Orchestrator id is
+  met when the owner runs the PO on that choice; otherwise it is the mismatch
+  case above. How Orchestrator, Carbon, Argon and `pro` rank against each
+  other for the rule that `agent_model` is not higher than the PO's model is
+  the owner's decision, recorded in the config's note; without one, the PO
+  treats an unlisted difference as a mismatch and reports it.
 - **Model exceptions.** A read-only lookup the `product-owner` skill lets
   run cheaper names `flash_lite` or `flash`, the only cheaper models
   `invoke_subagent` can pin. A subagent cannot be moved to another model, so
   when such a task proves to need more, the PO ends it (`manage_subagents`,
   `Action: "kill"`), posts `model-exception: ended`, and starts a new
   sub-session on `agent_model` (or `inherit`) from the last checkpoint.
-- **Work the config ties to a named model.** Where the config or the
-  repository's agent instructions require a named model for some work (for
-  example a security review on a stronger model), a PO on another model,
-  Orchestrator included, does not count that work as done. It may run the
-  review on the model it has, still independent (a fresh context, at least
-  as capable as the PO's model, that did not write the change), and writes in
-  the PR which model ran it. Until the review runs on the named model or the
-  owner accepts the substitute for that PR, the gate it belongs to is not
-  passed and the PR does not merge. Orchestrator counts as the named model
-  only when the config names Orchestrator, because it may hand steps of the
-  review to Hydrogen.
+- **Flagship tier and named-model work.** Repositories shared across Claude
+  Code and Antigravity should state PO and security-review capability by tier
+  (a flagship model, or at least as capable as the PO's model as in the
+  `product-owner` skill) rather than hardcoding one vendor's model. Where the
+  config or instructions ask for a flagship model (for example for POs and
+  independent security reviews of protected paths), `Claude Opus`, `Gemini 4
+  Carbon`, and `Orchestrator (Carbon)` (via a fresh-context `TypeName:
+  "research"`, `Model: "inherit"` subagent, which answers directly on Carbon
+  without handing off to Hydrogen) all satisfy that tier on Antigravity; a PO
+  on Carbon or Orchestrator (Carbon) runs its own independent review and does
+  not wait on Claude Opus. Only where the config or instructions pin one
+  specific vendor model with no tier rule and no `Antigravity:` equivalent
+  does a PO on another model not count that work as done: it may run an
+  independent review on the model it has, writes in the PR which model ran
+  it, and holds the gate (the PR does not merge) until the review runs on the
+  named model or the owner accepts the substitute for that PR.
 - **Quota.** Each model has its own quota (Orchestrator's included), shown
   under `View Usage` in the picker. A start or turn on a model whose quota is
   used up fails. That failure is not the model error the skill's
