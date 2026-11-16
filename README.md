@@ -778,6 +778,33 @@ the Antigravity rules and the Codex package are unchanged; the Codex
 package does not read these keys yet, so in a repository that sets
 `claim_command`, run its PO with `cc-po`.
 
+### Upgrading to 2.16.0
+
+No required config change: without the new keys every skill behaves as in
+2.15.0. The owner decided on 2026-11-16 to add two generic rules to the
+optional shared-core review. Both apply only when `shared_core_review` is
+set; with `none`, nothing changes. Both keys are in
+[`config-schema.md`](plugins/cc-po/skills/product-owner/config-schema.md):
+
+- `shared_core_wait`: a positive number of hours, or `none` (default: the
+  PR's PO waits for the owning PO). When the owning PO has not answered
+  within that many hours of the request, the PR's own PO runs an
+  independent, fresh-context flagship-model reviewer on the shared-core
+  files only, posts `## Shared-core review (stand-in)` naming the head SHA,
+  and may merge under the usual merge bar. The owning PO reviews that PR
+  after the merge, on its next check-in; a blocking finding is fixed
+  forward or reverted at once.
+- `shared_core_label`: a GitHub label name, or `none` (default). The PR's PO
+  adds the label when it asks for the review. The owning PO looks for open
+  PRs with that label on each check-in, and may subscribe to them so a
+  request wakes it, instead of scanning every open PR.
+
+Clarification: a shared-core review stays valid for later heads while the
+shared-core files are unchanged since the reviewed head (`git diff
+<reviewed>..<head> -- <files>` is empty); it is repeated only when they
+change. The checker validates both keys, and the Codex package (1.1.0)
+carries the same rules.
+
 ## License
 
 [MIT](LICENSE)

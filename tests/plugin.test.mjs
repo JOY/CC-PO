@@ -723,9 +723,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.15.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.15.0');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.15.0');
+test('the version is 2.16.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.16.0');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.16.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -989,6 +989,42 @@ test('POs are peers and shared_core_review is a known key that defaults to none'
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
   assert.match(schema, /\| `shared_core_review` \| `none` \|/);
   assert.match(read('plugins/cc-po/skills/setup/sample-config.md'), /^- shared_core_review: none$/m);
+});
+
+test('shared_core_wait and shared_core_label are known keys that default to none and are checked', () => {
+  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
+  const sample = read('plugins/cc-po/skills/setup/sample-config.md');
+  assert.match(schema, /\| `shared_core_wait` \| `none` \|/);
+  assert.match(schema, /\| `shared_core_label` \| `none` \|/);
+  assert.match(sample, /^- shared_core_wait: none$/m);
+  assert.match(sample, /^- shared_core_label: none$/m);
+  assert.deepEqual(checkConfig(sample), { errors: [], warnings: [] });
+  // Absent, nothing changes.
+  const { values } = parseConfig(minimal);
+  assert.equal(values.shared_core_wait, undefined);
+  assert.equal(values.shared_core_label, undefined);
+  assert.deepEqual(checkConfig(minimal), { errors: [], warnings: [] });
+  // Accepted values.
+  for (const extra of ['none', '1', '24', '24 (owner, 2026-11-16)']) {
+    assert.deepEqual(checkConfig(minimal + `\n- shared_core_wait: ${extra}\n`), { errors: [], warnings: [] }, extra);
+  }
+  for (const extra of ['none', 'shared-core-review', '`shared core`']) {
+    assert.deepEqual(checkConfig(minimal + `\n- shared_core_label: ${extra}\n`), { errors: [], warnings: [] }, extra);
+  }
+  // Rejected values.
+  for (const extra of ['0', '-4', '1.5', 'soon', 'hours', '']) {
+    assert.match(checkConfig(minimal + `\n- shared_core_wait: ${extra}\n`).errors.join('\n'), /shared_core_wait must be a positive integer number of hours or none/, extra);
+  }
+  assert.match(checkConfig(minimal + '\n- shared_core_label: \n').errors.join('\n'), /shared_core_label must be a GitHub label name or none/);
+  // The skill states the stand-in, the label and the converse of the repeat rule.
+  assert.match(skill, /`shared_core_wait` \(optional, default `none`\)/);
+  assert.match(skill, /`## Shared-core review \(stand-in\)`, naming the head SHA/);
+  assert.match(skill, /The owning PO reviews that PR after the merge, on its next check-in; a blocking finding is fixed forward or reverted at once/);
+  assert.match(skill, /`shared_core_label` \(optional, default `none`\): when set, the PR's PO adds that label to the PR when it asks for the review/);
+  assert.match(skill, /may subscribe to them so that a request wakes it/);
+  assert.match(skill, /Both keys apply only when `shared_core_review` is set; with `none`, nothing changes/);
+  assert.match(skill, /If those files change after that head, the review is repeated\. While those files are unchanged since the reviewed head \(`git diff <reviewed>\.\.<head> -- <files>` is empty\), the review stays valid for later heads/);
 });
 
 // 2.10.0 and 2.11.0: no owner-facing PO handoff, a lean PO context, archiving, Production handoff and cheaper tasks.

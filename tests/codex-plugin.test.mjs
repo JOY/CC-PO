@@ -29,3 +29,12 @@ test('every local skill reference is available in the installable package', () =
     assert.ok(read(`${root}/${link.slice(2)}`).length);
   }
 });
+
+test('the Codex skill carries the shared-core wait limit, label and valid-review rule', () => {
+  const skill = read('plugins/cc-po-codex/skills/product-owner/SKILL.md');
+  assert.match(skill, /`git diff <reviewed>\.\.<head> -- <files>` is empty/);
+  assert.match(skill, /Optional `shared_core_label`/);
+  assert.match(skill, /Optional `shared_core_wait` \(hours, default `none`\)/);
+  assert.match(skill, /`## Shared-core review \(stand-in\)`/);
+  assert.match(skill, /Both keys apply only when `shared_core_review` is set/);
+});

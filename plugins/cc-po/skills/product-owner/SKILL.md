@@ -504,7 +504,25 @@ it small.
     those files with a fresh subagent, and answers on the PR with
     `## Shared-core review (<Line> PO)`, the head SHA it reviewed, the
     verdict and any blocking findings. If those files change after that
-    head, the review is repeated.
+    head, the review is repeated. While those files are unchanged since
+    the reviewed head (`git diff <reviewed>..<head> -- <files>` is empty),
+    the review stays valid for later heads.
+  - `shared_core_label` (optional, default `none`): when set, the PR's PO
+    adds that label to the PR when it asks for the review. The owning PO
+    looks for open PRs with that label on each check-in, instead of
+    scanning every open PR, and may subscribe to them so that a request
+    wakes it.
+  - `shared_core_wait` (optional, default `none`): a number of hours. With
+    `none`, the PR's PO waits for the owning PO as above. When it is set
+    and the owning PO has not answered within that many hours of the
+    request, the PR's own PO runs an independent, fresh-context
+    flagship-model reviewer on the shared-core files only and posts the
+    result as `## Shared-core review (stand-in)`, naming the head SHA. It
+    may then merge under the usual merge bar. The owning PO reviews that
+    PR after the merge, on its next check-in; a blocking finding is fixed
+    forward or reverted at once.
+  - Both keys apply only when `shared_core_review` is set; with `none`,
+    nothing changes.
 
 ## What the PO does and does not do
 

@@ -24,7 +24,7 @@ export const KNOWN = new Set([
   'production_branch', 'production_merge', 'production_effect', 'promotion_notes',
   'test_environment', 'done_definition',
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
-  'promotion_reviews', 'shared_core_review', 'agent_model', 'agent_effort', 'subagent_effort',
+  'promotion_reviews', 'shared_core_review', 'shared_core_wait', 'shared_core_label', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
   'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
@@ -345,6 +345,18 @@ export function checkConfig(text, { root } = {}) {
         warnings.push(`pr_monitor ${m[1]} needs a note naming the owner (or a decision id), a date and that sessions run in auto or bypass mode, for example "auto_fix (owner, 2026-11-12, sessions in auto mode)"; without it the PO runs status`);
       }
     }
+  }
+  // shared_core_wait (2.16.0): a positive integer number of hours, or none.
+  // A note may follow ("24 (owner, 2026-11-16)").
+  if (values.shared_core_wait !== undefined) {
+    const v = unquote(values.shared_core_wait);
+    if (!isNone(v) && !/^[1-9]\d*(?![\w.-])/.test(v)) errors.push('shared_core_wait must be a positive integer number of hours or none');
+  }
+  // shared_core_label: a GitHub label name, or none. A label name may hold
+  // spaces and colons, so only an empty value is rejected.
+  if (values.shared_core_label !== undefined) {
+    const v = unquote(values.shared_core_label);
+    if (!isNone(v) && v.trim() === '') errors.push('shared_core_label must be a GitHub label name or none');
   }
   if (values.sidebar_groups !== undefined) {
     const v = unquote(values.sidebar_groups);
