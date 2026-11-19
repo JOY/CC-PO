@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "cc-po-codex",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Product Owner workflow for Codex. Assign issues to native subagents and coordinate reviewed GitHub pull requests.",
   "author": {
     "name": "JOY"
