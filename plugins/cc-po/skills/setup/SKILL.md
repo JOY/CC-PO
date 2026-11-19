@@ -92,9 +92,11 @@ skipping anything the arguments or step 1 settled:
 Everything else takes its schema default unless the user names it. That
 includes the sub-sessions' model and effort (`agent_model`, `agent_effort`,
 `subagent_effort`): left out, a sub-session runs on the PO's own model and
-effort. The same goes for the wake-up keys (`po_wake`, `gatekeeper_model`,
-`gatekeeper_active_minutes`). Mention the defaults you used in the summary so the user can change
-them.
+effort (when naming models explicitly, prefer rolling series such as `sonnet`,
+`opus`, `haiku`, `default`, or `family:<family>` rather than pinned minor
+versions). The same goes for the wake-up keys (`po_wake`, `gatekeeper_model`,
+`gatekeeper_active_minutes`; `gatekeeper_model` defaults to rolling `haiku`).
+Mention the defaults you used in the summary so the user can change them.
 
 The claim lock and parallel PO keys (`claim_command`, `pr_issue_keyword`,
 `po_labels`, `promotion_po`) are asked about only when the arguments or
@@ -203,7 +205,12 @@ Tell the user, in `report_language`:
   turn on a machine, to create the repository's gatekeeper (one app
   scheduled task that wakes a Product Owner after a stop or when it has
   work, so no Product Owner keeps its own check-in timer), unless `po_wake`
-  is `off`; the other Product Owners only check that it exists. The
+  is `off`; the other Product Owners only check that it exists. On a machine
+  where a second desktop account creates a `-2` gatekeeper task id, record the
+  `-2` approval in `watchdog-approval.md` inside `po_check_in_dir` so
+  `claude-gatekeeper-preflight.mjs` recognizes it as intentional rather than a
+  duplicate, and ensure its `SKILL.md` frontmatter carries rolling
+  `model: haiku`. The
   gatekeeper's model and thresholds are the keys
   `gatekeeper_model`, `gatekeeper_active_minutes`, which takes its default
   unless the user names them. Never write `pr_monitor: bind`, `pr_monitor: auto_fix` or `sidebar_groups: on`

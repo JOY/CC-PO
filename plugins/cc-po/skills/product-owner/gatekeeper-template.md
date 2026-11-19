@@ -48,7 +48,7 @@ those in itself.
 | `<owner/repo>` | The repository. |
 | `<owner>` | `owner_name`. |
 | `<language>` | `report_language`. |
-| `<model>` | `gatekeeper_model` (default `claude-haiku-5-5`). |
+| `<model>` | `gatekeeper_model` (default rolling `haiku`). |
 | `<active minutes>` | `gatekeeper_active_minutes` (default 60): how long a PO is quiet before it is woken for that, and how long a sub-session is idle before the wake message lists it. |
 | `<po rows>` | One row per line of the Lines table that has a PO session: `<po title> \| line:<slug> \| <check-in file>`. The title is the table's PO session title; the check-in file is the one that PO already keeps, else `po_check_in_dir` with `~` expanded, then `<repo owner>-<repo>-<slug>-po-checkin.md`, written as `<task id>` is. A line whose PO session is `none` has no row. A PO that covers more than one line (the owner folded a small line into it) lists every label of those lines in the middle cell, separated by `, `: `line:<slug>, line:<other>`. The run counts only pull requests that carry one of the labels in the PO's own row. In the Lines table, the folded line's PO column reads `none (covered by <PO title>)`. |
 | `<restart check>` | The read-only command for the machine, from "Restart check" below, written exactly. |
@@ -106,8 +106,12 @@ Create the task with `create_scheduled_task`:
 
 The tool has no model parameter, but the task is stored as a `SKILL.md` at
 the `path` that `list_scheduled_tasks` shows. After creating the task, the PO
-adds the line `model: <model>` to that file's frontmatter, once, so the app
-can run each fresh session on the cheapest model. The app may ignore that
+adds the line `model: <model>` (prefer rolling `model: haiku` rather than a
+pinned minor snapshot) to that file's frontmatter, once, so the app can run
+each fresh session on the cheapest rolling model series. If a second desktop
+account on the same machine creates a `-2` task id (because the primary
+account holds `<task id>`), record that `-2` task id in `watchdog-approval.md`
+and verify with `claude-gatekeeper-preflight.mjs`. The app may ignore that
 line. The PO checks the model of the first run with `get_session` (the run's
 session, found with `list_task_runs`) and notes the result in its check-in
 file and its next report: when the run did not use `<model>`, the owner may

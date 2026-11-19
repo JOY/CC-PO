@@ -78,7 +78,7 @@ skill.
 - shared_core_review: none
 - shared_core_wait: none
 - shared_core_label: none
-- agent_model: claude-sonnet-5-5
+- agent_model: sonnet
 - agent_effort: xhigh
 - subagent_effort: high
 
@@ -89,7 +89,7 @@ skill.
 - check_in_minutes: 30
 - executors: Codex, "Claude Code", Cursor
 - po_wake: gatekeeper
-- gatekeeper_model: claude-haiku-5-5
+- gatekeeper_model: haiku
 - gatekeeper_active_minutes: 60
 - po_check_in_dir: `~/.claude/po-state`
 - po_handoff: off

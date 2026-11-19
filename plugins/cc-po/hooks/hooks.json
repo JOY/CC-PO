@@ -1,0 +1,41 @@
+{
+  "description": "CC-PO Product Owner advisory, session-start reminder, and check-in size-cap hooks for Claude Code",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__ccd_session__start_session$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-start-session.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start-po.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Write|Edit|MultiEdit)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-checkin-cap.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
