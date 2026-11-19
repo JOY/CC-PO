@@ -279,7 +279,7 @@ Adjust it if your integration branch uses another merge method.
   app scheduled task, built from
   [`gatekeeper-template.md`](plugins/cc-po/skills/product-owner/gatekeeper-template.md),
   that runs every half hour as a fresh, short session on the cheapest model
-  (`gatekeeper_model`, default `claude-haiku-5-5`; the app may ignore the
+  (`gatekeeper_model`, default `haiku`; the app may ignore the
   request, so the first PO checks the first run's model). A run reads the
   session list, a read-only restart check and one read-only `gh` query for
   the open pull requests. It keeps no state file (a run that touches a file
@@ -804,6 +804,50 @@ shared-core files are unchanged since the reviewed head (`git diff
 <reviewed>..<head> -- <files>` is empty); it is repeated only when they
 change. The checker validates both keys, and the Codex package (1.1.0)
 carries the same rules.
+
+### Upgrading to 2.17.0
+
+No required config change: existing model IDs remain valid for backwards
+compatibility. Update the plugin in Claude Code (`claude plugin update`) or
+re-copy `plugins/cc-po` into your Antigravity plugin folder and restart
+Antigravity.
+
+- **Rolling model series policy and `po-model-advisor.mjs`:**
+  [`config-schema.md`](plugins/cc-po/skills/product-owner/config-schema.md),
+  `check-config.mjs`, and `sample-config.md` now generalize `agent_model` and
+  `gatekeeper_model` to accept bare rolling series names (`opus`, `sonnet`,
+  `haiku`, `default`), `family:<family>`, or exact model IDs (`gatekeeper_model`
+  and `gatekeeper-template.md` now default to rolling `haiku`). Run
+  `plugins/cc-po/skills/product-owner/po-model-advisor.mjs` to review role
+  defaults (`po`: `sonnet` + `high`, `gatekeeper`/`watchdog`: `haiku`,
+  `reviewer`: `sonnet` + `high`, `security-reviewer`: `opus` + `high`,
+  `explorer`: `haiku` + `low`), inspect `swarm(models)` / Antigravity hints,
+  and flag brittle pinned minor snapshots (such as `claude-haiku-5-5`).
+- **Claude-only lifecycle hooks (`plugins/cc-po/hooks/`):** Adds
+  `hooks/hooks.json` with fail-open advisory hooks (`PreToolUse`
+  `pre-start-session.mjs`, `SessionStart` `session-start-po.mjs`, and
+  `PostToolUse` `post-checkin-cap.mjs` enforcing the rolling `<= 6 KB`
+  check-in cap without corrupting headers or live state). Root `hooks.json`
+  and `mcp_config.json` remain absent so Antigravity is never affected.
+- **Custom subagent profiles (`plugins/cc-po/agents/`):** Adds read-only
+  profiles `po-explorer.md` (`haiku`, `low`), `po-reviewer.md` (`sonnet`,
+  `high`), and `po-security-reviewer.md` (`opus`, `high`).
+- **Progressive disclosure split:** Refactors `product-owner/SKILL.md` to
+  `<= 18 KB` with protocol details in `references/` (`wake-ups.md`,
+  `sprint-review.md`, `promotions-and-peers.md`, `handoff-and-parallel.md`,
+  `antigravity-host.md`), and compacts `rules/AGENTS.md` to `<= 3.2 KB`.
+- **Upgraded `agy-gatekeeper.mjs` and new `claude-gatekeeper-preflight.mjs`:**
+  `agy-gatekeeper.mjs` adds macOS multi-profile support via
+  `ANTIGRAVITY_APP_DATA_DIR`, `ANTIGRAVITY_AGENTAPI_EXE`, `AGENTAPI_BIN`,
+  auto-discovery across `/Applications/Antigravity.app` and
+  `Antigravity Profiles/<profile>/Antigravity (<profile>).app`, `--dry-run`,
+  `--state-file`, and `--json` status output. `claude-gatekeeper-preflight.mjs`
+  verifies scheduled task `SKILL.md` `model: haiku` frontmatter and cross-checks
+  `watchdog-approval.md` so intentional multi-account `-2` tasks are recognized
+  as valid rather than flagged as duplicates.
+- **Operational hygiene:** Formalizes fingerprinted `set_monitor` retries with
+  exponential backoff and retry caps, rolling `<= 6 KB` check-in file caps, and
+  `po:<runtime>` mutual-exclusion checks.
 
 ## License
 

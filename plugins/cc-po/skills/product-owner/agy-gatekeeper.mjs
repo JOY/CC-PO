@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Runs one Antigravity Product Owner gatekeeper pass for a repository,
 // matching gatekeeper-template.md without spawning sidebar conversations or
-// spending model tokens. No dependencies.
+// spending model tokens. Supports macOS multi-profile setups, --dry-run,
+// optional --state-file status snapshots, and --json structured output.
+// No dependencies.
 //
-//   node agy-gatekeeper.mjs <gatekeeper-config.json>
+//   node agy-gatekeeper.mjs <gatekeeper-config.json> [--dry-run] [--state-file <path>] [--json]
 //
 // Config JSON schema (<po_check_in_dir>/<repo owner>-<repo>-agy-gatekeeper.json):
 //   {
@@ -15,12 +17,12 @@
 //       { "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }
 //     ]
 //   }
-// Unknown or old keys (stateFile, quietHours, quietMinutes, coordinatorLabel, compactTokens, handoffTokens) are ignored: the
-// gatekeeper keeps no state file, and uses each PO's last activity as its memory.
+// Unknown or legacy config keys (stateFile, quietHours, quietMinutes, coordinatorLabel, compactTokens, handoffTokens) are ignored:
+// the gatekeeper keeps no state file unless --state-file is explicitly passed, and uses each PO's last activity as its memory.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, uptime } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,6 +62,63 @@ function unquoteArg(value) {
 
 function cleanCellTitle(title) {
   return String(title ?? '').replace(/[|\r\n]+/g, ' ').trim();
+}
+
+export function inferProfileName(...hints) {
+  for (const hint of hints) {
+    if (typeof hint !== 'string' || !hint) continue;
+    const match = hint.match(/Antigravity Profiles[\\/]([^\\/]+)/i);
+    if (match && match[1]) return match[1];
+  }
+  return null;
+}
+
+function inferProfilesBase(...hints) {
+  for (const hint of hints) {
+    if (typeof hint !== 'string' || !hint) continue;
+    const match = hint.match(/^(.*?[\\/]Antigravity Profiles)[\\/][^\\/]+/i);
+    if (match && match[1]) return match[1];
+  }
+  return null;
+}
+
+export function resolveBrainDir({
+  config = {},
+  deps = {},
+  env = process.env,
+  home = homedir(),
+  exists = existsSync,
+  readdir = readdirSync,
+} = {}) {
+  if (config?.brainDir) return expandHome(config.brainDir, home);
+  if (deps?.brainDir) return expandHome(deps.brainDir, home);
+
+  const rawAppData = config?.appDataDir || deps?.appDataDir || env.ANTIGRAVITY_APP_DATA_DIR || '';
+  if (typeof rawAppData === 'string' && rawAppData.trim()) {
+    const appDataDir = expandHome(rawAppData.trim(), home);
+    const directBrain = join(appDataDir, 'brain');
+    if (exists(directBrain)) return directBrain;
+    // Handle profile root such as ".../Antigravity Profiles/acc2" where brain
+    // sits inside gemini/<app_data_dir>/brain.
+    const geminiDir = join(appDataDir, 'gemini');
+    if (exists(geminiDir)) {
+      try {
+        const subdirs = readdir(geminiDir, { withFileTypes: true })
+          .filter((d) => d.isDirectory())
+          .map((d) => d.name)
+          .sort();
+        for (const sub of subdirs) {
+          const candidate = join(geminiDir, sub, 'brain');
+          if (exists(candidate)) return candidate;
+        }
+      } catch {
+        // Fall through to default brain path under appDataDir.
+      }
+    }
+    return directBrain;
+  }
+
+  return join(home, '.gemini', 'antigravity', 'brain');
 }
 
 export function resolvePoConversationId(po, checkInText) {
@@ -310,25 +369,87 @@ export function evaluateGatekeeper({ config, poInspections, restartTimes, openPr
   return { actions };
 }
 
-export function resolveAgentApiCommand(env = process.env, platform = process.platform, home = homedir()) {
+function commandForBinary(binPath) {
+  if (/language_server(?:\.exe)?$/i.test(binPath)) {
+    return { file: binPath, prefixArgs: ['agentapi'] };
+  }
+  return { file: binPath, prefixArgs: [] };
+}
+
+export function resolveAgentApiCommand(env = process.env, platform = process.platform, home = homedir(), options = {}) {
+  const exists = options.existsSync ?? existsSync;
+  const readdir = options.readdirSync ?? readdirSync;
+
+  for (const envKey of ['ANTIGRAVITY_AGENTAPI_EXE', 'AGENTAPI_BIN']) {
+    const raw = env?.[envKey];
+    if (typeof raw === 'string' && raw.trim()) {
+      const candidate = expandHome(raw.trim(), home);
+      if (exists(candidate)) return commandForBinary(candidate);
+    }
+  }
+
   if (platform === 'win32') {
-    const localAppData = env.LOCALAPPDATA || join(home, 'AppData', 'Local');
+    const localAppData = env?.LOCALAPPDATA || join(home, 'AppData', 'Local');
     const directExe = join(localAppData, 'Programs', 'antigravity', 'resources', 'bin', 'language_server.exe');
-    if (existsSync(directExe)) return { file: directExe, prefixArgs: ['agentapi'] };
+    if (exists(directExe)) return { file: directExe, prefixArgs: ['agentapi'] };
     const batPath = join(home, '.gemini', 'antigravity', 'bin', 'agentapi.bat');
-    if (existsSync(batPath)) {
+    if (exists(batPath)) {
       try {
         const bat = readFileSync(batPath, 'utf8');
         const m = bat.match(/"([^"]*language_server\.exe)"\s+agentapi/i);
-        if (m && existsSync(m[1])) return { file: m[1], prefixArgs: ['agentapi'] };
+        if (m && exists(m[1])) return { file: m[1], prefixArgs: ['agentapi'] };
       } catch {
         // Fall through to PATH lookup.
       }
     }
-  } else {
-    const binPath = join(home, '.gemini', 'antigravity', 'bin', 'agentapi');
-    if (existsSync(binPath)) return { file: binPath, prefixArgs: [] };
+    return { file: 'agentapi', prefixArgs: [] };
   }
+
+  if (platform === 'darwin') {
+    const profile = options.profile
+      || env?.ANTIGRAVITY_PROFILE
+      || inferProfileName(env?.ANTIGRAVITY_APP_DATA_DIR, options.appDataDir, options.brainDir, options.scriptPath);
+    const profilesBase = options.profilesBase
+      || inferProfilesBase(env?.ANTIGRAVITY_APP_DATA_DIR, options.appDataDir, options.brainDir, options.scriptPath)
+      || join(home, 'Library', 'Application Support', 'Antigravity Profiles');
+
+    if (profile) {
+      const profileBin = join(profilesBase, profile, `Antigravity (${profile}).app`, 'Contents', 'Resources', 'bin', 'language_server');
+      if (exists(profileBin)) return commandForBinary(profileBin);
+    }
+
+    const binPath = join(home, '.gemini', 'antigravity', 'bin', 'agentapi');
+    if (exists(binPath)) return { file: binPath, prefixArgs: [] };
+
+    const standardCandidates = [
+      options.systemApplicationsDir
+        ? join(options.systemApplicationsDir, 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server')
+        : '/Applications/Antigravity.app/Contents/Resources/bin/language_server',
+      join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server'),
+    ];
+    for (const candidate of standardCandidates) {
+      if (exists(candidate)) return commandForBinary(candidate);
+    }
+
+    if (exists(profilesBase)) {
+      try {
+        const entries = readdir(profilesBase, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+          .map((d) => d.name)
+          .sort();
+        for (const p of entries) {
+          const candidate = join(profilesBase, p, `Antigravity (${p}).app`, 'Contents', 'Resources', 'bin', 'language_server');
+          if (exists(candidate)) return commandForBinary(candidate);
+        }
+      } catch {
+        // Fall through to PATH lookup.
+      }
+    }
+    return { file: 'agentapi', prefixArgs: [] };
+  }
+
+  const binPath = join(home, '.gemini', 'antigravity', 'bin', 'agentapi');
+  if (exists(binPath)) return { file: binPath, prefixArgs: [] };
   return { file: 'agentapi', prefixArgs: [] };
 }
 
@@ -356,10 +477,30 @@ function parseTaggedRestartOutput(stdout, fallbackBootIso) {
   return { bootTime, appStartTime: pickAppStartTime({ guiStartIso, serverStartIso }) };
 }
 
-function defaultRestartTimes() {
+function findMacProcessStartIso(pattern, { exact = false, execSync = spawnSync } = {}) {
+  const args = exact ? ['-a', '-o', '-x', pattern] : ['-a', '-o', '-f', pattern];
+  const pg = execSync('pgrep', args, { encoding: 'utf8', shell: false, timeout: 5_000 });
+  if (pg.status !== 0 || !pg.stdout) return '';
+  const pid = pg.stdout.trim().split(/\s+/)[0];
+  if (!pid || !/^\d+$/.test(pid)) return '';
+  const ps = execSync('ps', ['-o', 'lstart=', '-p', pid], {
+    encoding: 'utf8',
+    shell: false,
+    timeout: 5_000,
+    env: { ...process.env, LC_ALL: 'C' },
+  });
+  if (ps.status !== 0 || !ps.stdout) return '';
+  const raw = ps.stdout.trim();
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+export function defaultRestartTimes(profile = null, execSync = spawnSync) {
   const bootIso = new Date(Date.now() - uptime() * 1000).toISOString();
   if (process.platform === 'win32') {
-    const ps = spawnSync(
+    const ps = execSync(
       'powershell.exe',
       [
         '-NoProfile',
@@ -375,25 +516,34 @@ function defaultRestartTimes() {
     return { bootTime: bootIso, appStartTime: '' };
   }
   if (process.platform === 'darwin') {
-    const sh = spawnSync(
-      '/bin/sh',
-      [
-        '-c',
-        'export LC_ALL=C; g="$(pgrep -ox Antigravity | head -n 1)"; s="$(pgrep -f \'[a]ntigravity.*language_server|[l]anguage_server\' | head -n 1)"; [ -n "$g" ] && echo "GUI=$(date -u -r "$(date -j -f \'%a %b %e %T %Y\' "$(ps -o lstart= -p "$g")" +%s)" +%Y-%m-%dT%H:%M:%SZ)"; [ -n "$s" ] && echo "SRV=$(date -u -r "$(date -j -f \'%a %b %e %T %Y\' "$(ps -o lstart= -p "$s")" +%s)" +%Y-%m-%dT%H:%M:%SZ)"',
-      ],
-      { encoding: 'utf8', shell: false, timeout: 10_000 },
-    );
-    if (sh.status === 0 && sh.stdout) {
-      return parseTaggedRestartOutput(sh.stdout, bootIso);
+    const safeProfile = profile && /^[A-Za-z0-9_.-]+$/.test(profile) ? profile : '';
+    let guiStartIso = '';
+    let serverStartIso = '';
+    if (safeProfile) {
+      const escapedProfile = safeProfile.replace(/\./g, '\\.');
+      guiStartIso = findMacProcessStartIso(
+        `Antigravity \\(${escapedProfile}\\)\\.app/Contents/MacOS/Antigravity`,
+        { execSync },
+      );
+      serverStartIso = findMacProcessStartIso(
+        `Antigravity \\(${escapedProfile}\\)\\.app/Contents/Resources/bin/language_server.*--standalone`,
+        { execSync },
+      );
+    } else {
+      guiStartIso = findMacProcessStartIso('Antigravity', { exact: true, execSync });
+      serverStartIso = findMacProcessStartIso(
+        '(?:^|/)Antigravity\\.app/Contents/Resources/bin/language_server.*--standalone',
+        { execSync },
+      ) || findMacProcessStartIso('language_server.*--standalone', { execSync });
     }
-    return { bootTime: bootIso, appStartTime: '' };
+    return { bootTime: bootIso, appStartTime: pickAppStartTime({ guiStartIso, serverStartIso }) };
   }
   if (process.platform === 'linux') {
-    const sh = spawnSync(
+    const sh = execSync(
       '/bin/sh',
       [
         '-c',
-        's="$(pgrep -f \'[a]ntigravity.*language_server|[l]anguage_server\' | head -n 1)"; if [ -n "$s" ]; then e="$(ps -o etimes= -p "$s" | tr -d \' \')"; [ -n "$e" ] && date -u -d "@$(( $(date +%s) - e ))" +"SRV=%Y-%m-%dT%H:%M:%SZ"; fi',
+        's="$(pgrep -a -f \'[a]ntigravity.*language_server|[l]anguage_server\' | head -n 1)"; if [ -n "$s" ]; then e="$(ps -o etimes= -p "$s" | tr -d \' \')"; [ -n "$e" ] && date -u -d "@$(( $(date +%s) - e ))" +"SRV=%Y-%m-%dT%H:%M:%SZ"; fi',
       ],
       { encoding: 'utf8', shell: false, timeout: 10_000 },
     );
@@ -417,9 +567,9 @@ function defaultQueryOpenPrs(repo) {
   return JSON.parse(res.stdout || '[]');
 }
 
-function defaultSendMessage(conversationId, message) {
+function defaultSendMessage(conversationId, message, resolvedCmd = resolveAgentApiCommand()) {
   if (!UUID_RE.test(conversationId)) throw new Error('invalid conversationId');
-  const cmd = resolveAgentApiCommand();
+  const cmd = resolvedCmd;
   const res = spawnSync(
     cmd.file,
     [...cmd.prefixArgs, 'send-message', conversationId, message],
@@ -452,13 +602,26 @@ function selectPoInspection(brainDir, po, checkInText, nowMs) {
 
 export function runGatekeeper(configPath, deps = {}) {
   const nowMs = deps.nowMs ?? Date.now();
-  const resolvedConfigPath = expandHome(configPath);
+  const env = deps.env ?? process.env;
+  const platform = deps.platform ?? process.platform;
+  const home = deps.home ?? homedir();
+  const dryRun = Boolean(deps.dryRun);
+  const resolvedConfigPath = expandHome(configPath, home);
   const config = JSON.parse(readFileSync(resolvedConfigPath, 'utf8'));
   if (!config?.repo || !REPO_RE.test(config.repo)) {
     throw new Error('gatekeeper config requires a valid owner/repo');
   }
 
-  const brainDir = expandHome(config.brainDir || deps.brainDir || join(homedir(), '.gemini', 'antigravity', 'brain'));
+  const brainDir = resolveBrainDir({ config, deps, env, home });
+  const scriptPath = deps.scriptPath ?? fileURLToPath(import.meta.url);
+  const rawEnvProfile = typeof env.ANTIGRAVITY_PROFILE === 'string' ? env.ANTIGRAVITY_PROFILE.trim() : '';
+  const profile = rawEnvProfile || inferProfileName(env.ANTIGRAVITY_APP_DATA_DIR, config.appDataDir, brainDir, scriptPath);
+  const agentApi = deps.agentApi ?? resolveAgentApiCommand(env, platform, home, {
+    appDataDir: config.appDataDir,
+    brainDir,
+    scriptPath,
+    profile,
+  });
 
   const excludedPoIds = new Set();
   const rawEntries = [];
@@ -468,7 +631,7 @@ export function runGatekeeper(configPath, deps = {}) {
     if (typeof po.conversationId === 'string' && UUID_RE.test(po.conversationId.trim())) {
       excludedPoIds.add(po.conversationId.trim().toLowerCase());
     }
-    const checkInPath = po.checkInFile ? expandHome(po.checkInFile) : '';
+    const checkInPath = po.checkInFile ? expandHome(po.checkInFile, home) : '';
     const checkInText = checkInPath && existsSync(checkInPath) ? readFileSync(checkInPath, 'utf8') : '';
     const poInfo = selectPoInspection(brainDir, po, checkInText, nowMs);
     if (poInfo) excludedPoIds.add(poInfo.conversationId);
@@ -509,7 +672,7 @@ export function runGatekeeper(configPath, deps = {}) {
 
   let restartTimes = { bootTime: '', appStartTime: '' };
   try {
-    restartTimes = (deps.getRestartTimes ?? defaultRestartTimes)();
+    restartTimes = (deps.getRestartTimes ?? (() => defaultRestartTimes(profile)))();
   } catch (err) {
     process.stderr.write(`gatekeeper restart check error: ${err.message}\n`);
   }
@@ -529,25 +692,80 @@ export function runGatekeeper(configPath, deps = {}) {
     nowMs,
   });
 
-  const send = deps.sendMessage ?? defaultSendMessage;
+  const send = deps.sendMessage ?? ((id, msg) => defaultSendMessage(id, msg, agentApi));
   const summaryParts = [];
+  const sendFailedTitles = new Set();
   for (const action of actions) {
     if (!action.message) {
       summaryParts.push(`${action.title}: ${action.skipped}`);
       continue;
     }
+    const tags = action.reasons.join(' + ');
+    if (dryRun) {
+      summaryParts.push(`${action.title}: would-wake (${tags})`);
+      continue;
+    }
     try {
       send(action.conversationId, action.message);
-      const tags = [action.reasons.join(' + ')].filter(Boolean).join('+');
       summaryParts.push(`${action.title}: woke (${tags})`);
     } catch (err) {
       process.stderr.write(`gatekeeper send error (${action.title}): ${err.message}\n`);
+      sendFailedTitles.add(action.title);
       summaryParts.push(`${action.title}: send-failed`);
     }
   }
 
   const summary = `gatekeeper (${config.repo}): ${summaryParts.join(', ') || 'no POs'}`;
-  return { summary, actions };
+  const status = {
+    repo: config.repo,
+    checkedAt: new Date(nowMs).toISOString(),
+    dryRun,
+    profile: profile || null,
+    brainDir,
+    agentApi: { file: agentApi.file, prefixArgs: agentApi.prefixArgs },
+    restartTimes,
+    actions: actions.map((action) => ({
+      title: action.title,
+      conversationId: action.conversationId || null,
+      skipped: action.skipped || null,
+      reasons: action.reasons || [],
+      woke: Boolean(action.message && !dryRun && !sendFailedTitles.has(action.title)),
+      wouldWake: Boolean(action.message && dryRun),
+      sendFailed: sendFailedTitles.has(action.title),
+    })),
+    summary,
+  };
+
+  if (deps.stateFile && !dryRun) {
+    const outPath = expandHome(deps.stateFile, home);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, `${JSON.stringify(status, null, 2)}\n`, 'utf8');
+  }
+
+  return { summary, actions, status };
+}
+
+export function parseCliArgs(argv) {
+  const opts = { configPath: null, stateFile: null, dryRun: false, json: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--dry-run') opts.dryRun = true;
+    else if (arg === '--json') opts.json = true;
+    else if (arg === '--state-file') {
+      if (!argv[i + 1]) throw new Error('--state-file requires a path');
+      opts.stateFile = argv[++i];
+    } else if (arg.startsWith('--state-file=')) {
+      opts.stateFile = arg.slice(13);
+      if (!opts.stateFile) throw new Error('--state-file requires a path');
+    } else if (arg.startsWith('-')) {
+      throw new Error(`unknown option: ${arg}`);
+    } else if (!opts.configPath) {
+      opts.configPath = arg;
+    } else {
+      throw new Error(`unexpected argument: ${arg}`);
+    }
+  }
+  return opts;
 }
 
 function isMain() {
@@ -559,14 +777,23 @@ function isMain() {
 }
 
 if (isMain()) {
-  const configPath = process.argv[2];
-  if (!configPath) {
-    process.stderr.write('usage: node agy-gatekeeper.mjs <gatekeeper-config.json>\n');
+  let opts;
+  try {
+    opts = parseCliArgs(process.argv.slice(2));
+  } catch (err) {
+    process.stderr.write(`usage error: ${err.message}\n`);
+    process.exit(2);
+  }
+  if (!opts.configPath) {
+    process.stderr.write('usage: node agy-gatekeeper.mjs <gatekeeper-config.json> [--dry-run] [--state-file <path>] [--json]\n');
     process.exit(2);
   }
   try {
-    const { summary } = runGatekeeper(configPath);
-    process.stdout.write(`${summary}\n`);
+    const { summary, status } = runGatekeeper(opts.configPath, {
+      stateFile: opts.stateFile,
+      dryRun: opts.dryRun,
+    });
+    process.stdout.write(`${opts.json ? JSON.stringify(status, null, 2) : summary}\n`);
   } catch (err) {
     process.stderr.write(`gatekeeper error: ${err.message}\n`);
     process.exit(1);

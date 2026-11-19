@@ -7,19 +7,41 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkConfig, findRoot, insideRoot, outsidePath, parseConfig, parsePoLabels, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
+import { checkConfig, findRoot, insideRoot, KNOWN, outsidePath, parseConfig, parsePoLabels, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
 import {
   evaluateGatekeeper,
   expandHome,
   extractActiveCheckInIds,
   inspectConversation,
   pickAppStartTime,
+  resolveAgentApiCommand,
+  resolveBrainDir,
   resolvePoConversationId,
   runGatekeeper,
 } from '../plugins/cc-po/skills/product-owner/agy-gatekeeper.mjs';
+import { adviseModels, classifyModelSpec } from '../plugins/cc-po/skills/product-owner/po-model-advisor.mjs';
+import { inspectScheduledGatekeepers, parseWatchdogApprovals } from '../plugins/cc-po/skills/product-owner/claude-gatekeeper-preflight.mjs';
+import { runHook as runPreStartHook } from '../plugins/cc-po/hooks/pre-start-session.mjs';
+import { runHook as runSessionStartHook } from '../plugins/cc-po/hooks/session-start-po.mjs';
+import { compactCheckInContent, runHook as runPostCheckInHook } from '../plugins/cc-po/hooks/post-checkin-cap.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
+const PO_REFS = [
+  'references/wake-ups.md',
+  'references/sprint-review.md',
+  'references/promotions-and-peers.md',
+  'references/handoff-and-parallel.md',
+  'references/antigravity-host.md',
+];
+const readSkillBundle = () => [
+  read('plugins/cc-po/skills/product-owner/SKILL.md'),
+  ...PO_REFS.map((r) => read(`plugins/cc-po/skills/product-owner/${r}`)),
+].join('\n');
+const readAntigravityBundle = () => [
+  read('plugins/cc-po/rules/AGENTS.md'),
+  read('plugins/cc-po/skills/product-owner/references/antigravity-host.md'),
+].join('\n');
 
 test('the marketplace lists the plugin once, and the version lives in plugin.json', () => {
   const marketplace = JSON.parse(read('.claude-plugin/marketplace.json'));
@@ -415,7 +437,7 @@ test('the watchdog wakes its PO right after a restart', () => {
   assert.match(text, /- macOS \(zsh or bash\): `date -u -r "\$\(sysctl -n kern\.boottime/);
   assert.match(text, /`cronExpression`: `<m>,<m\+15>,<m\+30>,<m\+45> \* \* \* \*`/);
   assert.match(text, /`description`: `Every 15 min: wake the <po title> of <owner\/repo> after a machine or app restart, or if it is idle over <idle minutes> min`/);
-  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  const skill = readSkillBundle().replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
   assert.match(skill, /Every 15 minutes it looks at the PO session/);
   assert.match(skill, /A prompt without the template's restart check \(one made from an older template\) is brought up to the current one/);
   assert.doesNotMatch(skill, /every 30 minutes/i);
@@ -427,7 +449,7 @@ test('the watchdog wakes its PO right after a restart', () => {
 test('the watchdog task id and check-in file name carry the repository owner', () => {
   const dir = join(root, 'plugins/cc-po/skills/product-owner');
   const template = readFileSync(join(dir, 'watchdog-template.md'), 'utf8').replace(/\r\n/g, '\n');
-  const skill = readFileSync(join(dir, 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n');
+  const skill = readSkillBundle().replace(/\r\n/g, '\n');
   const row = template.split('\n').find((line) => line.startsWith('| `<task id>`'));
   assert.ok(row, 'the Values table has a <task id> row');
   assert.match(row, /`<repo owner>-<repo>-<slug>-po-watchdog`/);
@@ -463,7 +485,7 @@ test('the repository root is found by its .git entry', () => {
 // line sets it, so the skill and the sample config both carry the per-run
 // override, and a PO may re-enable its approved watchdog in any turn.
 test('a Codex review is run at subagent_effort and an approved watchdog is re-enabled in any turn', () => {
-  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  const skill = readSkillBundle().replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
   assert.match(skill, /codex review -c model_reasoning_effort=<level> --base <branch>/);
   assert.match(skill, /Re-enabling the PO's own existing watchdog is not a new approval: where the approval above is on record, the PO does it in any turn/);
   assert.match(skill, /Creating or retargeting a watchdog, enabling one the owner has not approved/);
@@ -474,7 +496,7 @@ test('a Codex review is run at subagent_effort and an approved watchdog is re-en
 // A deliberate per-task effort exception must not be reset to agent_effort by the
 // reconciliation of a running sub-session, including after a PO handoff.
 test('a recorded per-task effort exception survives effort reconciliation', () => {
-  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  const skill = readSkillBundle().replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
   assert.match(skill, /the brief carries an `Effort exception:` line \(level, reason\)/);
   assert.match(skill, /reads the exception first and never moves a session to `agent_effort` while one stands/);
   assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /`Effort exception: <level>, <reason>`/);
@@ -484,7 +506,7 @@ test('a recorded per-task effort exception survives effort reconciliation', () =
 // PO handoff lifecycle is documented behind po_handoff, and the checker reads
 // the level named after "Exception:".
 test('an effort exception ends explicitly, the handoff lifecycle is documented and the exception level is checked', () => {
-  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
+  const skill = readSkillBundle().replace(/\r\n/g, '\n').replace(/\n\s*/g, ' ');
   assert.match(skill, /effort-exception: ended session=<id> reason=<why>/);
   assert.match(skill, /the latest authoritative record wins over the others/);
   assert.match(skill, /## PO handoff A PO is one long-lived session\. It never hands over because its context grew/);
@@ -604,7 +626,7 @@ test('the gatekeeper wakes a PO that is not running when any of three reasons ho
   assert.match(flat, /Machine boot <boot time>, app start <app start time>/);
   // The first runs may show a permission prompt for the two commands.
   assert.match(flatten(gatekeeper()), /may show such a prompt in the first runs\. The owner approves each once \("always allow"\)\. After creating the task, the PO checks the first run with `list_task_runs` and `list_events`/);
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   assert.match(skill, /It keeps no state and writes no file/);
   assert.match(skill, /\(c\) the PO has been quiet: its `lastActivityAt` is `gatekeeper_active_minutes` \(60 by default\) or more before now, whether or not its line has work in flight/);
   assert.match(skill, /`gatekeeper_quiet_hours` and `coordinator_line` are no longer used/);
@@ -619,7 +641,7 @@ test('the gatekeeper reads no context size and never asks the owner to compact o
   assert.doesNotMatch(prompt, /get_usage|Context check|Context notice|Handoff notice|<compact tokens>|<handoff tokens>|<tokens>|Compact session|compact itself/);
   assert.doesNotMatch(flat, /fresh PO session/);
   assert.match(flatten(gatekeeper()), /Context needs no owner action: never ask <owner> to compact a session or open a new PO session because of context size/);
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   assert.match(skill, /\*\*No context notices\.\*\* The run reads no session's context size and sends no message that asks the owner to compact a session, open a new PO session or restart anything/);
   assert.match(skill, /The PO is one long-lived session\. It relies on the app's automatic context compaction and never asks the owner to compact it, restart it or open a new PO session because of its context size/);
   assert.doesNotMatch(skill, /Compact session|po_handoff_tokens|fresh PO session/);
@@ -638,7 +660,7 @@ test('the gatekeeper has one task id per repository, an off-the-half-hour cron a
   assert.match(flatten(template), /`<m>` is a minute from 2 to 13/);
   assert.match(template, /`model: <model>`/);
   assert.match(flatten(template), /The app may ignore that line\. The PO checks the model of the first run with `get_session`/);
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   assert.match(skill, /task id `<repo owner>-<repo>-po-gatekeeper`/);
   assert.doesNotMatch(skill, /<repo owner>-<repo>-gatekeeper\.md/);
   assert.match(skill, /The first PO of the repository that finds no gatekeeper creates it, at an owner turn/);
@@ -647,7 +669,7 @@ test('the gatekeeper has one task id per repository, an off-the-half-hour cron a
 });
 
 test('under the gatekeeper a PO keeps no check-in cron, retires its watchdog and keeps its context small', () => {
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   assert.match(skill, /Under `po_wake: gatekeeper` \(the default\) the PO keeps no in-session check-in \(no `CronCreate` check-in and no `ScheduleWakeup` loop\)/);
   assert.match(skill, /disables it with `update_scheduled_task` \(`enabled: false`\), and deletes its own in-session check-in cron/);
   assert.match(skill, /Where the app refuses the disable, the PO says in its digest which task the owner must switch off by hand/);
@@ -716,16 +738,16 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   // Every key is in the schema and the sample, so none reads as prose.
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
   const sample = parseConfig(read('plugins/cc-po/skills/setup/sample-config.md')).values;
-  for (const [key, fallback] of [['po_wake', 'gatekeeper'], ['gatekeeper_model', 'claude-haiku-5-5'], ['gatekeeper_active_minutes', '60']]) {
+  for (const [key, fallback] of [['po_wake', 'gatekeeper'], ['gatekeeper_model', 'haiku'], ['gatekeeper_active_minutes', '60']]) {
     assert.match(schema, new RegExp(`\\| \`${key}\` \\| \`${fallback}\` \\|`), key);
     assert.equal(sample[key], fallback, key);
   }
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.16.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.16.0');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.16.0');
+test('the version is 2.17.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.17.0');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.17.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -981,8 +1003,8 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
 });
 
 test('POs are peers and shared_core_review is a known key that defaults to none', () => {
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
-  assert.match(skill, /### Peer POs and security review/);
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
+  assert.match(skill, /## Peer POs and security review/);
   assert.match(skill, /POs are peers\. Each works with the owner directly/);
   assert.match(skill, /`Security review requested \(<Line> PO\)`/);
   assert.match(skill, /It does not approve the PR/);
@@ -992,7 +1014,7 @@ test('POs are peers and shared_core_review is a known key that defaults to none'
 });
 
 test('shared_core_wait and shared_core_label are known keys that default to none and are checked', () => {
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
   const sample = read('plugins/cc-po/skills/setup/sample-config.md');
   assert.match(schema, /\| `shared_core_wait` \| `none` \|/);
@@ -1029,7 +1051,7 @@ test('shared_core_wait and shared_core_label are known keys that default to none
 
 // 2.10.0 and 2.11.0: no owner-facing PO handoff, a lean PO context, archiving, Production handoff and cheaper tasks.
 test('the PO is one long-lived session, keeps its context lean, archives finished sessions and frees Production-waiting slots', () => {
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   // No handoff that needs the owner (JOY, 2026-11-12): a handoff only when the owner replaces a PO.
   assert.doesNotMatch(skill, /a fresh PO each day|po_handoff_tokens|size trigger/i);
   assert.match(skill, /A handoff happens only when the owner themself replaces a PO/);
@@ -1078,7 +1100,7 @@ test('the PO is one long-lived session, keeps its context lean, archives finishe
 
 // 2.12.0: the desktop app's PR monitor, a model and effort on every start, and sidebar groups (#7145 in DOS/DOS.AI).
 test('the PR monitor, per-task model and effort and sidebar groups are documented, bounded and checked', () => {
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
   const rules = read('plugins/cc-po/rules/AGENTS.md');
   // PR monitor modes: off is the old behaviour, status is read-only, bind and auto_fix need the owner's attribution and auto/bypass mode.
@@ -1199,8 +1221,8 @@ test('the owner_name value counts as naming the owner in a pr_monitor or sidebar
     assert.match(r.warnings.join('\n'), /pr_monitor auto_fix needs a note naming the owner/, v);
   }
   assert.match(read('plugins/cc-po/skills/product-owner/config-schema.md'), /names the owner \(the word `owner`, the `owner_name` value, or a `decision_log` id\)/);
-  // The runtime rule in SKILL.md accepts the same three ways of naming the owner as the checker.
-  assert.match(flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n')), /attribution \(the word `owner`, the config's `owner_name` value or a `decision_log` id\), a date and the statement/);
+  // The runtime rule in the skill bundle accepts the same three ways of naming the owner as the checker.
+  assert.match(flatten(readSkillBundle().replace(/\r\n/g, '\n')), /attribution \(the word `owner`, the config's `owner_name` value or a `decision_log` id\), a date and the statement/);
   // Unicode whole words and one-character names.
   const unicode = (name, v) => checkConfig(minimal.replace('- owner_name: Sam', `- owner_name: ${name}`).replace('- project_id: PVT_example', `- project_id: PVT_example\n- pr_monitor: ${v}`));
   const naming = /pr_monitor auto_fix needs a note naming the owner/;
@@ -1261,7 +1283,7 @@ test('the gatekeeper and watchdog restart check covers Windows, macOS and Linux 
 
 // 2.13.0 - 2.14.1: Antigravity's Orchestrator model choice, Antigravity agent_model clauses and flagship-tier reviews.
 test('the Antigravity rules cover Orchestrator, inherited models, flagship tier and quota', () => {
-  const rules = flatten(read('plugins/cc-po/rules/AGENTS.md').replace(/\r\n/g, '\n'));
+  const rules = flatten(readAntigravityBundle().replace(/\r\n/g, '\n'));
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   const schema = flatten(read('plugins/cc-po/skills/product-owner/config-schema.md').replace(/\r\n/g, '\n'));
   assert.match(rules, /## Models and Orchestrator/);
@@ -1291,7 +1313,7 @@ test('the Antigravity rules cover Orchestrator, inherited models, flagship tier 
   assert.match(readme, /flagship-tier security reviews run on `Claude Opus`, `Gemini 4 Carbon`, or `Orchestrator \(Carbon\)`/);
   assert.match(readme, /Whenever the actual reviewer does not satisfy the required tier, `Antigravity:` equivalent, or single-vendor pinned model, the PR does not merge until a qualifying model runs the review or the owner accepts the substitute/);
   const sharedConfig = read('plugins/cc-po/skills/setup/sample-config.md')
-    .replace('- agent_model: claude-sonnet-5-5', '- agent_model: claude-sonnet-5-5 (Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)');
+    .replace('- agent_model: sonnet', '- agent_model: sonnet (Antigravity: inherit on Orchestrator (Carbon) or Gemini 4 Carbon)');
   assert.deepEqual(checkConfig(sharedConfig), { errors: [], warnings: [] });
 });
 
@@ -1362,7 +1384,7 @@ test('task-claim follows the claim lock only when claim_command is set, and keep
 });
 
 test('the PO honours po_labels, the claim lock and promotion_po only when the config sets them', () => {
-  const skill = flatten(read('plugins/cc-po/skills/product-owner/SKILL.md').replace(/\r\n/g, '\n'));
+  const skill = flatten(readSkillBundle().replace(/\r\n/g, '\n'));
   assert.match(skill, /When the config sets `claim_command`, every claim this skill names .* goes through that command's lock .* Without `claim_command`, nothing changes/);
   assert.match(skill, /it instead claims with `--take-over`, linking the handoff comment/);
   assert.match(skill, /\*\*Parallel POs\*\* \(only when the config sets `po_labels`\)/);
@@ -1383,5 +1405,199 @@ test('the PO honours po_labels, the claim lock and promotion_po only when the co
   // The templates other clients use do not mention the new keys.
   for (const path of ['gatekeeper-template.md', 'watchdog-template.md', 'agy-gatekeeper.mjs']) {
     assert.doesNotMatch(read(`plugins/cc-po/skills/product-owner/${path}`), /claim_command|po_labels|promotion_po/);
+  }
+});
+
+// 2.17.0: rolling model series, po-model-advisor, Claude-only lifecycle hooks, subagent profiles,
+// Progressive Disclosure byte caps, upgraded macOS multi-profile agy-gatekeeper, and gatekeeper preflight.
+test('2.17.0 Progressive Disclosure keeps SKILL.md <= 18 KB, AGENTS.md <= 3.2 KB, and valid ./references links', () => {
+  const skillPath = 'plugins/cc-po/skills/product-owner/SKILL.md';
+  const rulesPath = 'plugins/cc-po/rules/AGENTS.md';
+  const skillBytes = Buffer.byteLength(read(skillPath), 'utf8');
+  const rulesBytes = Buffer.byteLength(read(rulesPath), 'utf8');
+  assert.ok(skillBytes <= 18_000, `SKILL.md is ${skillBytes} bytes (> 18000)`);
+  assert.ok(rulesBytes <= 3_200, `AGENTS.md is ${rulesBytes} bytes (> 3200)`);
+
+  const skill = read(skillPath);
+  const refs = [...skill.matchAll(/\]\(\.\/references\/([a-z0-9-]+\.md)\)/g)].map((m) => m[1]);
+  assert.ok(refs.length >= 5, `expected >= 5 reference links, got ${refs.length}`);
+  for (const ref of refs) {
+    assert.ok(existsSync(join(root, 'plugins/cc-po/skills/product-owner/references', ref)), `missing reference ${ref}`);
+  }
+});
+
+test('2.17.0 rolling series config, po-model-advisor, and Claude-only hooks work safely and fail open', () => {
+  for (const series of ['opus', 'sonnet', 'haiku', 'default', 'family:sonnet', 'sonnet (Antigravity: inherit on Orchestrator (Carbon))']) {
+    const r = checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- agent_model: ${series}\n- gatekeeper_model: haiku`));
+    assert.deepEqual(r.errors, [], series);
+  }
+  const badModel = checkConfig(minimal.replace('- project_id: PVT_example', '- project_id: PVT_example\n- agent_model: not a valid model note'));
+  assert.match(badModel.errors.join('\n'), /agent_model must be a rolling series/);
+
+  const advice = adviseModels({
+    configText: `${minimal}\n- agent_model: claude-sonnet-5-5\n- gatekeeper_model: haiku`,
+    runtime: 'antigravity',
+    swarmModels: '["gemini-pro-orchestrator", "flash_lite", "flash"]',
+  });
+  assert.equal(advice.recommendations.po.series, 'sonnet');
+  assert.equal(advice.recommendations['security-reviewer'].series, 'opus');
+  assert.equal(classifyModelSpec('sonnet').stale, false);
+  assert.equal(classifyModelSpec('claude-haiku-5-5').stale, true);
+  assert.match(advice.warnings.join('\n'), /Pinned minor\/snapshot model 'claude-sonnet-5-5'/);
+  assert.equal(advice.swarmHints.byRole.explorer, 'flash_lite');
+
+  assert.equal(existsSync(join(root, 'plugins/cc-po/hooks.json')), false, 'must NOT place root hooks.json in plugin root');
+  assert.equal(existsSync(join(root, 'plugins/cc-po/mcp_config.json')), false);
+  const hooksCfg = JSON.parse(read('plugins/cc-po/hooks/hooks.json'));
+  assert.ok(hooksCfg.hooks.PreToolUse && hooksCfg.hooks.SessionStart && hooksCfg.hooks.PostToolUse);
+  for (const file of ['pre-start-session.mjs', 'session-start-po.mjs', 'post-checkin-cap.mjs']) {
+    assert.ok(existsSync(join(root, 'plugins/cc-po/hooks', file)), `missing hook script ${file}`);
+  }
+
+  for (const [file, model, effort] of [
+    ['po-explorer.md', 'haiku', 'low'],
+    ['po-reviewer.md', 'sonnet', 'high'],
+    ['po-security-reviewer.md', 'opus', 'high'],
+  ]) {
+    const agent = read(`plugins/cc-po/agents/${file}`);
+    assert.match(agent, new RegExp(`^model:\\s*${model}$`, 'm'));
+    assert.match(agent, new RegExp(`^effort:\\s*${effort}$`, 'm'));
+    assert.match(agent, /^disallowedTools:\s*Write,\s*Edit,\s*MultiEdit$/m);
+  }
+
+  assert.equal(runPreStartHook('invalid json{'), null);
+  const preWarn = runPreStartHook(JSON.stringify({ tool_input: { model: 'claude-sonnet-5-5', effort: 'high' } }));
+  assert.match(preWarn.hookSpecificOutput.additionalContext, /prefer rolling series `sonnet`/);
+  assert.equal(runPreStartHook(JSON.stringify({ tool_input: { model: 'sonnet', effort: 'high' } })), null);
+
+  const dir = mkdtempSync(join(tmpdir(), 'ccpo-hooks-'));
+  try {
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'product-owner-config.md'), minimal, 'utf8');
+    const ssOut = runSessionStartHook(JSON.stringify({ cwd: dir, source: 'startup' }));
+    assert.match(ssOut.hookSpecificOutput.additionalContext, /<= 6 KB/);
+
+    const checkIn = join(dir, 'dos-dos-ai-gateway-antigravity-po-checkin.md');
+    const longBullets = Array.from({ length: 120 }, (_, i) => `- Closed PR #${7000 + i} fixed routing bug item ${i} cleanly`).join('\n');
+    const oversizedArchive = `# Gateway PO check-in\n\nSession: \`11111111-2222-3333-4444-555555555555\`\n\n## Live State\n- Active PR #123\n\n## Recently closed\n${longBullets}\n`;
+    writeFileSync(checkIn, oversizedArchive, 'utf8');
+    const compactedOut = runPostCheckInHook(JSON.stringify({ tool_input: { file_path: checkIn } }));
+    assert.match(compactedOut.hookSpecificOutput.additionalContext, /safely compacted/);
+    const afterText = readFileSync(checkIn, 'utf8');
+    assert.ok(Buffer.byteLength(afterText, 'utf8') <= 6144);
+    assert.match(afterText, /Active PR #123/);
+
+    const unsafeOversized = `# PO check-in\n\n## Live State\n${longBullets}\n`;
+    writeFileSync(checkIn, unsafeOversized, 'utf8');
+    const warnOnly = runPostCheckInHook(JSON.stringify({ tool_input: { file_path: checkIn } }));
+    assert.match(warnOnly.hookSpecificOutput.additionalContext, /no safe trailing archived section/);
+    assert.equal(readFileSync(checkIn, 'utf8'), unsafeOversized);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('2.17.0 claude-gatekeeper-preflight and multi-profile agy-gatekeeper', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccpo-preflight-'));
+  try {
+    const tasksDir = join(dir, 'scheduled-tasks');
+    const makeTask = (id, modelLine, repo = 'DOS/DOS.AI') => {
+      mkdirSync(join(tasksDir, id), { recursive: true });
+      const fmModel = modelLine ? `\nmodel: ${modelLine}` : '';
+      writeFileSync(
+        join(tasksDir, id, 'SKILL.md'),
+        `---\nname: ${id}\ndescription: gatekeeper${fmModel}\n---\n\nYou are the gatekeeper of the ${repo} repository.\n`,
+        'utf8',
+      );
+    };
+    makeTask('dos-dos-ai-po-gatekeeper', 'haiku', 'DOS/DOS.AI');
+    makeTask('dos-dos-ai-po-gatekeeper-2', 'haiku', 'DOS/DOS.AI');
+    makeTask('dos-give-po-gatekeeper', 'claude-haiku-5-5', 'DOS/Give');
+    makeTask('dos-rate-core-po-gatekeeper', '', 'DOS/Rate');
+    makeTask('dos-ludy-po-gatekeeper', 'haiku', 'DOS/Ludy');
+    makeTask('dos-ludy-po-gatekeeper-2', 'haiku', 'DOS/Ludy');
+    // Multi-line per-line watchdogs in the same repo must not collide as duplicates,
+    // while YAML-quoted pinned snapshots in SKILL.md must be flagged by advisor too.
+    mkdirSync(join(tasksDir, 'a-b-api-po-watchdog'), { recursive: true });
+    writeFileSync(
+      join(tasksDir, 'a-b-api-po-watchdog', 'SKILL.md'),
+      '---\nname: a-b-api-po-watchdog\ndescription: watchdog\nmodel: "haiku"\n---\n\nYou are the watchdog of the a/b repository.\n',
+      'utf8',
+    );
+    mkdirSync(join(tasksDir, 'a-b-web-po-watchdog'), { recursive: true });
+    writeFileSync(
+      join(tasksDir, 'a-b-web-po-watchdog', 'SKILL.md'),
+      "---\nname: a-b-web-po-watchdog\ndescription: watchdog\nmodel: 'claude-haiku-5-5'\n---\n\nYou are the watchdog of the a/b repository.\n",
+      'utf8',
+    );
+
+    const approvalFile = join(dir, 'watchdog-approval.md');
+    writeFileSync(
+      approvalFile,
+      '- Gatekeeper for DOS/DOS.AI in the second app account (task id dos-dos-ai-po-gatekeeper-2): approved.\n',
+      'utf8',
+    );
+    const report = inspectScheduledGatekeepers({ tasksDir, approvalFile });
+    assert.equal(report.ok, false);
+    assert.ok(report.issues.some((i) => i.taskId === 'dos-give-po-gatekeeper' && i.code === 'pinned-snapshot'));
+    assert.ok(report.issues.some((i) => i.taskId === 'dos-rate-core-po-gatekeeper' && i.code === 'missing-model'));
+    assert.ok(!report.issues.some((i) => i.taskId === 'dos-dos-ai-po-gatekeeper-2'));
+    assert.ok(report.issues.some((i) => i.taskId === 'dos-ludy-po-gatekeeper-2' && i.code === 'duplicate-task'));
+    assert.ok(!report.issues.some((i) => i.taskId === 'a-b-api-po-watchdog'));
+    assert.ok(!report.issues.some((i) => i.taskId === 'a-b-web-po-watchdog' && i.code === 'duplicate-task'));
+
+    const advisorTasks = adviseModels({ tasksDir });
+    assert.ok(advisorTasks.taskFindings.some((f) => f.taskId === 'a-b-web-po-watchdog' && f.status === 'stale-pinned-model'));
+    const missingCfg = adviseModels({ configPath: join(dir, 'missing-config.md') });
+    assert.match(missingCfg.warnings.join('\n'), /Config file not found/);
+
+    const agyHost = read('plugins/cc-po/skills/product-owner/references/antigravity-host.md');
+    assert.doesNotMatch(agyHost, /<this skill's directory>\/\.\.\/po-model-advisor\.mjs/);
+    assert.match(agyHost, /<this skill's directory>\/po-model-advisor\.mjs/);
+
+    const sprintRef = read('plugins/cc-po/skills/product-owner/references/sprint-review.md');
+    assert.match(sprintRef, /## Add sprints/);
+    assert.match(sprintRef, /updateProjectV2Field/);
+    assert.match(sprintRef, /an iteration left out is deleted/);
+
+    const acc2App = '/Users/JOY/Library/Application Support/Antigravity Profiles/acc2/Antigravity (acc2).app/Contents/Resources/bin/language_server';
+    const acc2Cmd = resolveAgentApiCommand(
+      { ANTIGRAVITY_APP_DATA_DIR: '/Users/JOY/Library/Application Support/Antigravity Profiles/acc2/gemini/antigravityprofileacc2' },
+      'darwin',
+      '/Users/JOY',
+      { existsSync: (p) => p === acc2App },
+    );
+    assert.equal(acc2Cmd.file, acc2App);
+    assert.deepEqual(acc2Cmd.prefixArgs, ['agentapi']);
+
+    const gkConfigPath = join(dir, 'gk.json');
+    const stateOut = join(dir, 'state', 'status.json');
+    writeFileSync(gkConfigPath, JSON.stringify({ repo: 'DOS/DOS.AI', owner: 'JOY', activeMinutes: 30, pos: [] }), 'utf8');
+    const dryRes = runGatekeeper(gkConfigPath, {
+      dryRun: true,
+      stateFile: stateOut,
+      env: { ANTIGRAVITY_PROFILE: 'acc2' },
+      nowMs: Date.parse('2026-11-19T05:00:00Z'),
+      queryOpenPrs: () => [],
+      getRestartTimes: () => ({ bootTime: '', appStartTime: '' }),
+    });
+    assert.equal(dryRes.status.dryRun, true);
+    assert.equal(dryRes.status.profile, 'acc2');
+    assert.equal(existsSync(stateOut), false, 'dryRun must not write stateFile');
+
+    const gkSrc = read('plugins/cc-po/skills/product-owner/agy-gatekeeper.mjs');
+    assert.match(gkSrc, /'-a',\s*'-o',\s*'-x'/);
+    assert.match(gkSrc, /'-a',\s*'-o',\s*'-f'/);
+
+    runGatekeeper(gkConfigPath, {
+      dryRun: false,
+      stateFile: stateOut,
+      nowMs: Date.parse('2026-11-19T05:00:00Z'),
+      queryOpenPrs: () => [],
+      getRestartTimes: () => ({ bootTime: '', appStartTime: '' }),
+    });
+    assert.equal(JSON.parse(readFileSync(stateOut, 'utf8')).repo, 'DOS/DOS.AI');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

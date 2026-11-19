@@ -404,6 +404,24 @@ export function checkConfig(text, { root } = {}) {
       warnings.push('promotion_po names a runtime with no po_labels pair, so no PO of the listed runtimes promotes');
     }
   }
+  // Model keys accept bare rolling series (opus, sonnet, haiku, default,
+  // inherit), family:<family>, exact model ids (for backwards compatibility),
+  // or none, optionally followed by a parenthesized note.
+  for (const key of ['agent_model', 'gatekeeper_model']) {
+    const raw = values[key];
+    if (raw === undefined || isNone(raw)) continue;
+    const v = unquote(raw).trim();
+    const m = v.match(/^(\S+)(?:\s+([\s\S]*))?$/);
+    const head = m ? m[1].replace(/`+$/g, '') : '';
+    const rest = m?.[2]?.trim() ?? '';
+    const validSeries = /^(?:opus|sonnet|haiku|default|inherit)(?:\[[a-z0-9]+\])?$/i.test(head);
+    const validFamily = /^family:[a-z0-9][a-z0-9._[\]-]*$/i.test(head);
+    const validExactId = !/^family:/i.test(head) && /^[a-z0-9][a-z0-9._:/[\]-]*$/i.test(head);
+    const validNote = rest === '' || rest.startsWith('(');
+    if ((!validSeries && !validFamily && !validExactId) || !validNote) {
+      errors.push(`${key} must be a rolling series (opus, sonnet, haiku, default), family:<family>, an exact model id, or none`);
+    }
+  }
   // The PO passes an effort to start_session, which takes one of a fixed set
   // of levels, so another value would fail every dispatch; a note may follow
   // the level ("xhigh (owner, 2026-10-31)").
