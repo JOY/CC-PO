@@ -58,7 +58,10 @@ Which model a sub-session gets, Orchestrator included: "Models and Orchestrator"
   read-only tasks such as an independent security review or sprint audit so no
   write or shell tools are exposed, noting that Orchestrator may still route
   routine substeps to Hydrogen unless the conversation runs on direct
-  `Gemini 4 Carbon` or `Claude Opus`). A PO the owner runs on Orchestrator
+  `Gemini 4 Carbon` or `Claude Opus`). Where `Orchestrator (Neon)` (model id
+  `gemini-pro-orchestrator-neon`) is available in the picker, it is the
+  preferred Gemini orchestrator (routing routine execution while planning on
+  Gemini 4 Neon). A PO the owner runs on Orchestrator
   needs nothing more for routine work: its sub-sessions inherit it, so each
   worker routes its own steps. The PO does not imitate the routing by pinning
   `flash` or `flash_lite` for tasks it judges simple: a task that changes
@@ -85,7 +88,11 @@ Which model a sub-session gets, Orchestrator included: "Models and Orchestrator"
   fresh-context `TypeName: "research"`, `Model: "inherit"` subagent) satisfies
   it too unless the repository's rules forbid routing substeps to Hydrogen on
   that gate; when satisfied, a PO on Carbon or Orchestrator (Carbon) runs its
-  own independent review and does not wait on Claude Opus. Whenever the
+  own independent review and does not wait on Claude Opus. `Gemini 4 Neon`
+  (`gemini-4-neon-high` / `gemini-4-neon-xhigh`) and `Orchestrator (Neon)`
+  (`gemini-pro-orchestrator-neon`, via a fresh-context `TypeName: "research"`,
+  `Model: "inherit"` subagent unless Hydrogen delegation is forbidden) also
+  satisfy the flagship tier. Whenever the
   reviewer's actual model (or review subagent, for example running a security
   review as `TypeName: "self"` under Orchestrator instead of
   `TypeName: "research"`, or running on Orchestrator when the repository
@@ -102,7 +109,14 @@ Which model a sub-session gets, Orchestrator included: "Models and Orchestrator"
   or another model, never retries in a loop and never moves the work to another
   model on its own. It says once in its digest which work is stopped and when
   the quota resets (if the app shows it); the owner picks another model or
-  waits.
+  waits. When the owner or `docs/product-owner-config.md` explicitly authorizes
+  a quota-fallback policy (for example, on Claude quota exhaustion: PO runs
+  `Orchestrator (Neon)` (`gemini-pro-orchestrator-neon`), and subagents/swarm
+  workers run `Gemini 4 Hydrogen (High)` (`gemini-4-hydrogen-high`) for
+  routine/helper work or `Gemini 4 Neon` (`gemini-4-neon-medium` /
+  `gemini-4-neon-high` / `gemini-4-neon-xhigh`) by task complexity), the PO
+  switches cleanly via `swarm(action="model")` without asking again and records
+  the switch in its check-in.
 - **Effort skip.** Antigravity has no session effort API. Skip session effort
   reconciliation and effort exceptions silently (they need no owner action).
   Keep `-c model_reasoning_effort=<subagent_effort>` on `codex review` when

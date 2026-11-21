@@ -1601,3 +1601,27 @@ test('2.17.0 claude-gatekeeper-preflight and multi-profile agy-gatekeeper', () =
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('2.18.0 Antigravity Neon/Hydrogen quota-fallback policy and model advisor support', () => {
+  const hostRules = flatten(read('plugins/cc-po/rules/AGENTS.md').replace(/\r\n/g, '\n'));
+  const agyHost = flatten(read('plugins/cc-po/skills/product-owner/references/antigravity-host.md').replace(/\r\n/g, '\n'));
+  assert.match(hostRules, /Orchestrator \(Neon\).*gemini-pro-orchestrator-neon/);
+  assert.match(hostRules, /Gemini 4 Hydrogen \(High\).*gemini-4-hydrogen-high.*Gemini 4 Neon/);
+  assert.match(hostRules, /Asking JOY:.*ask_question/);
+  assert.match(agyHost, /Orchestrator \(Neon\)` \(model id `gemini-pro-orchestrator-neon`\)/);
+  assert.match(agyHost, /Gemini 4 Neon.*gemini-4-neon-high.*gemini-4-neon-xhigh.*also satisfy the flagship tier/);
+  assert.match(agyHost, /explicitly authorizes a quota-fallback policy/);
+
+  assert.equal(classifyModelSpec('gemini-pro-orchestrator-neon').kind, 'antigravity-id');
+  assert.equal(classifyModelSpec('gemini-4-neon-high').kind, 'antigravity-id');
+  assert.equal(classifyModelSpec('gemini-4-hydrogen-high').kind, 'antigravity-id');
+
+  const neonAdvice = adviseModels({
+    configText: `${minimal}\n- agent_model: sonnet (Antigravity: Orchestrator (Neon))\n- gatekeeper_model: haiku`,
+    runtime: 'antigravity',
+    swarmModels: '["gemini-pro-orchestrator-neon", "gemini-4-neon-high", "gemini-4-hydrogen-high", "flash_lite"]',
+  });
+  assert.equal(neonAdvice.swarmHints.byRole.po, 'gemini-pro-orchestrator-neon');
+  assert.equal(neonAdvice.swarmHints.byRole.reviewer, 'gemini-4-neon-high');
+  assert.equal(neonAdvice.swarmHints.byRole['security-reviewer'], 'gemini-4-neon-high');
+});
