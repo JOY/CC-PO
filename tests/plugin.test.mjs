@@ -16,10 +16,13 @@ import {
   classifyIssueComment,
   computeBackoffMs,
   evaluateSignals,
+  extractIssueLabelsFromFingerprint,
   isMultiSignalMode,
   releasePoLock,
 } from '../plugins/cc-po/skills/product-owner/gatekeeper-core.mjs';
 import {
+  defaultQueryOpenIssues,
+  defaultQueryOpenPrs,
   evaluateGatekeeper,
   expandHome,
   extractActiveCheckInIds,
@@ -36,6 +39,8 @@ import {
 import {
   evaluateClaudeGatekeeper,
   parseClaudeEvalArgs,
+  queryClaudeOpenIssues,
+  queryClaudeOpenPrs,
   runClaudeGatekeeperEval,
 } from '../plugins/cc-po/skills/product-owner/claude-gatekeeper-eval.mjs';
 import { adviseModels, classifyModelSpec } from '../plugins/cc-po/skills/product-owner/po-model-advisor.mjs';
@@ -3283,4 +3288,313 @@ test('2.18.0 Red Team regressions: post-checkin-cap ISO-8601 headings & Live sta
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// 2.18.0 live production bugfix #1: 3-tier gh pr list fallback (502/504 -> midFields -> baseFields) & gh issue list fallback.
+test('2.18.0 live bugfix #1: defaultQueryOpenPrs, queryClaudeOpenPrs, and open-issues queries fall back cleanly on HTTP 502/504 and unknown json field', () => {
+  for (const [label, queryPrs, queryIssues] of [
+    ['agy-gatekeeper', defaultQueryOpenPrs, defaultQueryOpenIssues],
+    ['claude-gatekeeper-eval', queryClaudeOpenPrs, queryClaudeOpenIssues],
+  ]) {
+    // Tier 1 (fullFields, limit 50) fails with HTTP 502 -> falls back to Tier 2 (midFields, limit 100).
+    const calls502 = [];
+    const prsFromMid = queryPrs('DOS/DOS.AI', (cmd, args) => {
+      calls502.push({ cmd, args });
+      if (calls502.length === 1) {
+        return { status: 1, stdout: '', stderr: 'GraphQL: Something went wrong while executing your query (HTTP 502)' };
+      }
+      return {
+        status: 0,
+        stdout: JSON.stringify([{ number: 7978, labels: [{ name: 'line:platform' }], mergeStateStatus: 'CLEAN', reviewDecision: 'APPROVED', headRefOid: 'abc123', updatedAt: '2026-11-21T15:00:00Z' }]),
+        stderr: '',
+      };
+    });
+    assert.equal(calls502.length, 2, `${label}: expected 2 calls on 502 fallback`);
+    assert.equal(calls502[0].args[calls502[0].args.indexOf('--limit') + 1], '50', `${label}: tier 1 limit`);
+    assert.match(calls502[0].args[calls502[0].args.indexOf('--json') + 1], /statusCheckRollup,comments/);
+    assert.equal(calls502[1].args[calls502[1].args.indexOf('--limit') + 1], '100', `${label}: tier 2 limit`);
+    assert.equal(
+      calls502[1].args[calls502[1].args.indexOf('--json') + 1],
+      'number,labels,mergeStateStatus,reviewDecision,headRefOid,updatedAt',
+      `${label}: tier 2 midFields`,
+    );
+    assert.equal(prsFromMid.length, 1);
+    assert.equal(prsFromMid[0].number, 7978);
+
+    // Tier 1 fails with HTTP 504, Tier 2 fails with unknown json field -> falls back to Tier 3 (baseFields, limit 100).
+    const calls3Tier = [];
+    const prsFromBase = queryPrs('DOS/DOS.AI', (cmd, args) => {
+      calls3Tier.push({ cmd, args });
+      if (calls3Tier.length === 1) return { status: 1, stdout: '', stderr: 'HTTP 504: Gateway Timeout' };
+      if (calls3Tier.length === 2) return { status: 1, stdout: '', stderr: 'Unknown JSON field: "reviewDecision"' };
+      return {
+        status: 0,
+        stdout: JSON.stringify([{ number: 7979, labels: [{ name: 'line:platform' }], mergeStateStatus: 'CLEAN', updatedAt: '2026-11-21T15:05:00Z' }]),
+        stderr: '',
+      };
+    });
+    assert.equal(calls3Tier.length, 3, `${label}: expected 3-tier fallback`);
+    assert.equal(
+      calls3Tier[2].args[calls3Tier[2].args.indexOf('--json') + 1],
+      'number,labels,mergeStateStatus,updatedAt',
+      `${label}: tier 3 baseFields`,
+    );
+    assert.equal(prsFromBase[0].number, 7979);
+
+    // Tier 2 failure unrelated to unknown json field stops and throws cleanly.
+    const callsHardErr = [];
+    assert.throws(
+      () => queryPrs('DOS/DOS.AI', (cmd, args) => {
+        callsHardErr.push({ cmd, args });
+        return { status: 1, stdout: '', stderr: 'HTTP 500: Internal Server Error' };
+      }),
+      /HTTP 500/,
+    );
+    assert.equal(callsHardErr.length, 2);
+
+    // Open issues query: Tier 1 (limit 50 with comments) fails with HTTP 502 -> falls back to Tier 2 (limit 100 without comments).
+    const issueCalls = [];
+    const issues = queryIssues('DOS/DOS.AI', (cmd, args) => {
+      issueCalls.push({ cmd, args });
+      if (issueCalls.length === 1) return { status: 1, stdout: '', stderr: 'HTTP 502 Bad Gateway' };
+      return {
+        status: 0,
+        stdout: JSON.stringify([{ number: 4001, state: 'OPEN', labels: [{ name: 'line:platform' }], updatedAt: '2026-11-21T15:00:00Z' }]),
+        stderr: '',
+      };
+    });
+    assert.equal(issueCalls.length, 2, `${label}: expected 2 calls on issue fallback`);
+    assert.equal(issueCalls[0].args[issueCalls[0].args.indexOf('--limit') + 1], '50');
+    assert.match(issueCalls[0].args[issueCalls[0].args.indexOf('--json') + 1], /comments/);
+    assert.equal(issueCalls[1].args[issueCalls[1].args.indexOf('--limit') + 1], '100');
+    assert.doesNotMatch(issueCalls[1].args[issueCalls[1].args.indexOf('--json') + 1], /comments/);
+    assert.equal(issues[0].number, 4001);
+  }
+});
+
+// 2.18.0 live production bugfix #2: protocol comment filtering under owner login, strict isDispatchable, and 30m per-issue cooldown.
+test('2.18.0 live bugfix #2: agent protocol comments under owner login do not trigger owner-reply, isDispatchable gates on new/unblocked/unclaimed, and 30m per-issue cooldown applies', () => {
+  const opts = { owner: 'JOY', peerPoLogins: ['peer-po'] };
+
+  // Protocol comments posted using owner's GitHub login (JOY) must NOT trigger owner-reply.
+  for (const body of [
+    'claim: executor=antigravity session=abc123 scope="src/" branch=feat/x target=2026-11-21',
+    'checkpoint: session=abc123 waiting for CI',
+    'done: PR #123 merged into main',
+    'release: session=abc123 releasing lock',
+    'PO acceptance: merge at deadbeef',
+    'blocked: waiting on upstream API key',
+    'status: in-review',
+    'Gatekeeper wake at 2026-11-21T15:00:00Z (reasons: restart).',
+  ]) {
+    const cls = classifyIssueComment({ author: { login: 'JOY' }, body }, opts);
+    assert.equal(cls.isOwner, false, `protocol comment must not be isOwner: ${body}`);
+    assert.equal(cls.isAgentProtocol, true, `must detect protocol comment: ${body}`);
+    assert.equal(cls.tag, 'protocol', body);
+  }
+
+  // handoff: and genuine human owner replies under JOY login still classify and trigger properly.
+  const handoffCls = classifyIssueComment({ author: { login: 'JOY' }, body: 'handoff: ready for Production deployment' }, opts);
+  assert.equal(handoffCls.isHandoff, true);
+  assert.equal(handoffCls.isOwner, false);
+  assert.equal(handoffCls.tag, 'handoff');
+
+  const humanOwnerCls = classifyIssueComment({ author: { login: 'JOY' }, body: 'Approved — please ship this before Friday.' }, opts);
+  assert.equal(humanOwnerCls.isOwner, true);
+  assert.equal(humanOwnerCls.isAgentProtocol, false);
+  assert.equal(humanOwnerCls.tag, 'owner');
+
+  const po = { title: 'Core PO', label: 'line:core' };
+  const baseMs = Date.parse('2026-11-21T16:00:00Z');
+  const session = {
+    conversationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    isRunning: false,
+    lastPlannerMs: baseMs - 20 * 60_000,
+    lastActivityMs: baseMs - 20 * 60_000,
+    consecutiveUnansweredWakes: 0,
+  };
+  const cfg = { owner: 'JOY', subSessionsNormal: 3 };
+
+  // Known issue receiving protocol comments under JOY login -> NO wake (no owner-reply, no dispatchable).
+  const existingIssue = {
+    number: 601,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: new Date(baseMs - 30 * 60_000).toISOString(),
+    comments: [],
+  };
+  const prevStateWith601 = {
+    issueFingerprints: { '601': buildIssueFingerprint(existingIssue, opts) },
+  };
+  const protocolUpdate = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+      comments: [{ author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'checkpoint: session=xyz tests green' }],
+    }],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(protocolUpdate.shouldWake, false, 'protocol comment by JOY on known issue must not wake');
+
+  // Known issue with ordinary non-owner comment (no blocked->unblocked transition) -> NO wake.
+  const ordinaryComment = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+      comments: [{ author: { login: 'contributor' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'FYI saw this too' }],
+    }],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(ordinaryComment.shouldWake, false, 'ordinary comment on already-known issue must not wake isDispatchable');
+
+  // New issue that already has an active claim: comment -> NOT dispatchable; once released -> dispatchable.
+  const claimedNewIssue = {
+    number: 602,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+    comments: [{ author: { login: 'JOY' }, createdAt: new Date(baseMs - 6 * 60_000).toISOString(), body: 'claim: executor=codex session=s1 scope="a" branch=b target=2026-11-22' }],
+  };
+  const claimedEval = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [claimedNewIssue],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(claimedEval.shouldWake, false, 'issue with active claim: must not wake as dispatchable');
+
+  // Brand-new unclaimed issue on line (prevFp === undefined && isFresh) -> wakes with trigger 'dispatchable'.
+  const brandNewIssue = {
+    number: 603,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+    comments: [],
+  };
+  const newEval = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [brandNewIssue],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(newEval.shouldWake, true);
+  assert.deepEqual(newEval.reasons, ['issue-dispatchable-or-owner-reply']);
+  assert.equal(newEval.triggeredIssues[0].number, 603);
+  assert.equal(newEval.triggeredIssues[0].trigger, 'dispatchable');
+
+  // Issue transitioning from blocked -> unblocked wakes with trigger 'unblocked'.
+  const blockedPrevIssue = {
+    number: 604,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }, { name: 'blocked' }],
+    updatedAt: new Date(baseMs - 60 * 60_000).toISOString(),
+    comments: [],
+  };
+  const blockedFp = buildIssueFingerprint(blockedPrevIssue, opts);
+  assert.deepEqual(extractIssueLabelsFromFingerprint(blockedFp), ['blocked', 'line:core']);
+  const unblockedEval = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...blockedPrevIssue,
+      labels: [{ name: 'line:core' }],
+      updatedAt: new Date(baseMs - 4 * 60_000).toISOString(),
+    }],
+    prevPoState: { issueFingerprints: { '604': blockedFp } },
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(unblockedEval.shouldWake, true);
+  assert.equal(unblockedEval.triggeredIssues[0].number, 604);
+  assert.equal(unblockedEval.triggeredIssues[0].trigger, 'unblocked');
+
+  // Genuine owner reply wakes AND sets 30-minute per-issue cooldown (issueAlertedAt).
+  const ownerReply1 = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+      comments: [{ author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'Looks good, go ahead!' }],
+    }],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(ownerReply1.shouldWake, true);
+  assert.equal(ownerReply1.triggeredIssues[0].trigger, 'owner-reply');
+  assert.equal(ownerReply1.nextPoState.issueAlertedAt['601:owner-reply'], baseMs);
+
+  // Another genuine owner reply on #601 just 10 minutes later is suppressed by 30m per-issue cooldown.
+  const ownerReplyCooldown = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs + 8 * 60_000).toISOString(),
+      comments: [
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'Looks good, go ahead!' },
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs + 8 * 60_000).toISOString(), body: 'Also check edge case B' },
+      ],
+    }],
+    prevPoState: ownerReply1.nextPoState,
+    config: cfg,
+    nowMs: baseMs + 10 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(ownerReplyCooldown.shouldWake, false, 'same issue+trigger within 30m must be suppressed by issueAlertedAt cooldown');
+
+  // After 35 minutes (> 30m cooldown), a new owner reply wakes again.
+  const ownerReplyAfterCooldown = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs + 34 * 60_000).toISOString(),
+      comments: [
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'Looks good, go ahead!' },
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs + 34 * 60_000).toISOString(), body: 'Ping after 35m' },
+      ],
+    }],
+    prevPoState: ownerReply1.nextPoState,
+    config: cfg,
+    nowMs: baseMs + 35 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(ownerReplyAfterCooldown.shouldWake, true);
+  assert.equal(ownerReplyAfterCooldown.triggeredIssues[0].trigger, 'owner-reply');
 });
