@@ -10,6 +10,7 @@ export const DEFAULT_HEARTBEAT_ACTIVE_MINUTES = 180;
 export const DEFAULT_HEARTBEAT_IDLE_MINUTES = 720;
 export const DEFAULT_SUBAGENT_STALL_MINUTES = 30;
 export const DEFAULT_SUBAGENT_COOLDOWN_MINUTES = 120;
+export const DEFAULT_ISSUE_COOLDOWN_MINUTES = 30;
 export const DEFAULT_SUB_SESSIONS_NORMAL = 3;
 export const DEFAULT_BACKOFF_BASE_MINUTES = 60;
 export const DEFAULT_BACKOFF_MAX_MINUTES = 240;
@@ -33,6 +34,9 @@ const PENDING_STATES = new Set(['PENDING', 'QUEUED', 'IN_PROGRESS', 'EXPECTED', 
 const PR_ATTENTION_STATUSES = new Set(['CLEAN', 'UNSTABLE', 'CHANGES_REQUESTED', 'DIRTY']);
 const BLOCKED_ISSUE_LABEL_RE = /^(?:blocked|status:blocked|on-hold|waiting|in-progress|claimed)$/i;
 const HANDOFF_COMMENT_RE = /(?:^|\n)\s*handoff\s*:/i;
+const CLAIM_OR_CHECKPOINT_RE = /(?:^|\n)\s*(?:claim|checkpoint)\s*:/i;
+const RELEASE_OR_DONE_RE = /(?:^|\n)\s*(?:release|handoff|done)\s*:/i;
+const AGENT_PROTOCOL_COMMENT_RE = /^(?:\s*(?:>\s*)?(?:\*\*|__)?(?:(?:claim|checkpoint|done|release|po\s+acceptance|blocked|status|waiting|review|effort-exception|model-exception|progress|update|reopen|summary|audit|triage|security\s+review|shared-core\s+review)\s*[:(]|waiting\s+for\b|gatekeeper\s+wake\b)|##\s*(?:shared-core review|sprint review|po\s+digest|status|summary|review)\b)/i;
 const PEER_PO_COMMENT_RE = /(?:^|\n)\s*(?:security review requested\s*\(|peer\s+po\b|##\s*shared-core review|from\s+.+\bpo\b)/i;
 
 export function expandHome(filePath, home = homedir()) {
@@ -146,7 +150,14 @@ export function summarizeComments(comments) {
 
 export function classifyIssueComment(comment, { owner = '', peerPoLogins = [] } = {}) {
   if (!comment || typeof comment !== 'object') {
-    return { isHandoff: false, isOwner: false, isPeerPo: false, tag: 'none' };
+    return {
+      isHandoff: false,
+      isOwner: false,
+      isPeerPo: false,
+      isAgentProtocol: false,
+      isClaimOrCheckpoint: false,
+      tag: 'none',
+    };
   }
   const body = String(comment.body ?? '');
   const author = String(
@@ -163,15 +174,48 @@ export function classifyIssueComment(comment, { owner = '', peerPoLogins = [] } 
   );
 
   const isHandoff = HANDOFF_COMMENT_RE.test(body);
-  const isOwner = Boolean(ownerNorm && authorNorm && (authorNorm === ownerNorm || ownerNorm.split(/\s+/)[0] === authorNorm));
+  const isClaimOrCheckpoint = CLAIM_OR_CHECKPOINT_RE.test(body);
   const isPeerPo = Boolean((authorNorm && peerSet.has(authorNorm)) || PEER_PO_COMMENT_RE.test(body));
+  // Agents running gh under the owner's GitHub token post protocol comments (claim:, checkpoint:,
+  // done:, release:, PO acceptance:, blocked:, waiting:, etc.) as the owner account; never treat
+  // those as genuine human owner replies (while keeping handoff: and peer-PO signals active).
+  const isAgentProtocol = !isHandoff && !isPeerPo && (AGENT_PROTOCOL_COMMENT_RE.test(body) || isClaimOrCheckpoint);
+  const isOwner = Boolean(
+    !isAgentProtocol
+    && !isHandoff
+    && !isPeerPo
+    && ownerNorm
+    && authorNorm
+    && (authorNorm === ownerNorm || ownerNorm.split(/\s+/)[0] === authorNorm),
+  );
 
   let tag = 'comment';
   if (isHandoff) tag = 'handoff';
   else if (isOwner) tag = 'owner';
   else if (isPeerPo) tag = 'peer-po';
+  else if (isAgentProtocol) tag = 'protocol';
 
-  return { isHandoff, isOwner, isPeerPo, tag };
+  return { isHandoff, isOwner, isPeerPo, isAgentProtocol, isClaimOrCheckpoint, tag };
+}
+
+export function extractIssueLabelsFromFingerprint(fingerprint) {
+  if (typeof fingerprint !== 'string' || !fingerprint) return [];
+  const part = fingerprint.split('|').find((p) => p.startsWith('lbl:'));
+  if (!part) return [];
+  return part.slice(4).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function hasActiveClaimComment(comments) {
+  const list = Array.isArray(comments)
+    ? comments
+    : (Array.isArray(comments?.nodes) ? comments.nodes : []);
+  let claimed = false;
+  for (const c of list) {
+    const body = String(c?.body ?? '');
+    if (CLAIM_OR_CHECKPOINT_RE.test(body)) claimed = true;
+    else if (RELEASE_OR_DONE_RE.test(body)) claimed = false;
+  }
+  return claimed;
 }
 
 export function buildPrFingerprint(pr) {
@@ -734,6 +778,13 @@ export function evaluateSignals({
   // Signal 4: issue-dispatchable-or-owner-reply (multi-signal mode).
   const currentIssueFingerprints = {};
   const triggeredIssues = [];
+  const issueCooldownMinutes = positiveInt(config?.issueCooldownMinutes, DEFAULT_ISSUE_COOLDOWN_MINUTES);
+  const issueCooldownMs = issueCooldownMinutes * 60_000;
+  const prevIssueAlerts = prevPoState?.issueAlertedAt && typeof prevPoState.issueAlertedAt === 'object'
+    ? prevPoState.issueAlertedAt
+    : {};
+  const nextIssueAlerts = { ...prevIssueAlerts };
+
   if (useMultiSignal && Array.isArray(openIssues)) {
     const validIssues = openIssues.filter((issue) => Number.isInteger(issue?.number) && issue.number > 0);
     const ownIssues = validIssues.filter((issue) => {
@@ -768,12 +819,24 @@ export function evaluateSignals({
       const labels = normalizeLabelNames(issue.labels);
       const isBlocked = labels.some((l) => BLOCKED_ISSUE_LABEL_RE.test(l));
       const isFresh = updatedMs !== null && updatedMs > lastPlannerMs;
-      const isDispatchable = hasFreeSlot && !isBlocked && (prevIssueFps ? (prevFp === undefined || isFresh) : isFresh);
+      const wasBlocked = prevFp !== undefined
+        && extractIssueLabelsFromFingerprint(prevFp).some((l) => BLOCKED_ISSUE_LABEL_RE.test(l));
+      const isNewlyOnLine = prevIssueFps ? (prevFp === undefined && isFresh) : isFresh;
+      const justUnblocked = Boolean(prevIssueFps && prevFp !== undefined && wasBlocked && !isBlocked);
+      const isDispatchable = hasFreeSlot
+        && !isBlocked
+        && !cls.isClaimOrCheckpoint
+        && !hasActiveClaimComment(issue.comments)
+        && (isNewlyOnLine || justUnblocked);
 
       if (hasNewSpecialComment || isDispatchable) {
         const trigger = hasNewSpecialComment
           ? (cls.isHandoff ? 'handoff' : (cls.isOwner ? 'owner-reply' : 'peer-po'))
-          : 'dispatchable';
+          : (justUnblocked ? 'unblocked' : 'dispatchable');
+        const alertKey = `${issue.number}:${trigger}`;
+        const lastAlertMs = typeof prevIssueAlerts[alertKey] === 'number' ? prevIssueAlerts[alertKey] : 0;
+        if (lastAlertMs > 0 && (nowMs - lastAlertMs) < issueCooldownMs) continue;
+        nextIssueAlerts[alertKey] = nowMs;
         triggeredIssues.push({
           number: issue.number,
           trigger,
@@ -878,6 +941,7 @@ export function evaluateSignals({
     prFingerprints: validOpenPrs !== null ? currentPrFingerprints : (preservedState.prFingerprints ?? {}),
     issueFingerprints: Array.isArray(openIssues) ? currentIssueFingerprints : (preservedState.issueFingerprints ?? {}),
     subagentAlertedAt: nextSubAlerts,
+    issueAlertedAt: nextIssueAlerts,
     subagentQuotaProbe: nextSubQuotaProbe,
     lastEvaluatedAtMs: nowMs,
   };

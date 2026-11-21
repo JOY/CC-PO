@@ -689,18 +689,22 @@ export function defaultRestartTimes(profile = null, execSync = spawnSync) {
 export function defaultQueryOpenPrs(repo, execSync = spawnSync) {
   if (!REPO_RE.test(repo)) throw new Error('invalid repo name');
   const fullFields = 'number,labels,mergeStateStatus,reviewDecision,headRefOid,updatedAt,statusCheckRollup,comments';
+  const midFields = 'number,labels,mergeStateStatus,reviewDecision,headRefOid,updatedAt';
   const baseFields = 'number,labels,mergeStateStatus,updatedAt';
-  let res = execSync(
+  const runPrList = (limit, fields) => execSync(
     'gh',
-    ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--search', 'draft:false', '--limit', '200', '--json', fullFields],
-    { encoding: 'utf8', shell: false, timeout: 30_000 },
+    ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--search', 'draft:false', '--limit', String(limit), '--json', fields],
+    { encoding: 'utf8', shell: false, timeout: 25_000 },
   );
-  if (res.status !== 0 && /unknown json field/i.test(res.stderr || '')) {
-    res = execSync(
-      'gh',
-      ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--search', 'draft:false', '--limit', '200', '--json', baseFields],
-      { encoding: 'utf8', shell: false, timeout: 30_000 },
-    );
+
+  let res = runPrList(50, fullFields);
+  if (res.status !== 0) {
+    // Fallback on ANY failure (HTTP 502/504 GraphQL timeout on large repos, unknown field, etc.)
+    // to midFields (keeps mergeStateStatus/reviewDecision/headRefOid without heavy nested GraphQL).
+    res = runPrList(100, midFields);
+    if (res.status !== 0 && /unknown json field/i.test(res.stderr || '')) {
+      res = runPrList(100, baseFields);
+    }
   }
   if (res.status !== 0) {
     throw new Error((res.stderr || res.error?.message || 'gh pr list failed').trim().split(/\r?\n/)[0]);
@@ -710,11 +714,15 @@ export function defaultQueryOpenPrs(repo, execSync = spawnSync) {
 
 export function defaultQueryOpenIssues(repo, execSync = spawnSync) {
   if (!REPO_RE.test(repo)) throw new Error('invalid repo name');
-  const res = execSync(
+  const runIssueList = (limit, fields) => execSync(
     'gh',
-    ['issue', 'list', `--repo=${repo}`, '--state', 'open', '--limit', '100', '--json', 'number,state,labels,updatedAt,comments'],
-    { encoding: 'utf8', shell: false, timeout: 30_000 },
+    ['issue', 'list', `--repo=${repo}`, '--state', 'open', '--limit', String(limit), '--json', fields],
+    { encoding: 'utf8', shell: false, timeout: 25_000 },
   );
+  let res = runIssueList(50, 'number,state,labels,updatedAt,comments');
+  if (res.status !== 0) {
+    res = runIssueList(100, 'number,state,labels,updatedAt');
+  }
   if (res.status !== 0) {
     throw new Error((res.stderr || res.error?.message || 'gh issue list failed').trim().split(/\r?\n/)[0]);
   }
