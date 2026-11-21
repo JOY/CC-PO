@@ -729,13 +729,18 @@ export function defaultQueryOpenIssues(repo, execSync = spawnSync) {
   return JSON.parse(res.stdout || '[]');
 }
 
-function defaultSendMessage(conversationId, message, resolvedCmd = resolveAgentApiCommand()) {
+const DEFAULT_SEND_TIMEOUT_MS = 60_000;
+const SEND_BACKOFF_BASE_MINUTES = 10;
+const SEND_BACKOFF_MAX_MINUTES = 60;
+
+function defaultSendMessage(conversationId, message, resolvedCmd = resolveAgentApiCommand(), timeoutMs = DEFAULT_SEND_TIMEOUT_MS) {
   if (!UUID_RE.test(conversationId)) throw new Error('invalid conversationId');
   const cmd = resolvedCmd;
+  const effectiveTimeout = Number.isInteger(timeoutMs) && timeoutMs >= 5_000 ? timeoutMs : DEFAULT_SEND_TIMEOUT_MS;
   const res = spawnSync(
     cmd.file,
     [...cmd.prefixArgs, 'send-message', conversationId, message],
-    { encoding: 'utf8', shell: false, timeout: 30_000 },
+    { encoding: 'utf8', shell: false, timeout: effectiveTimeout },
   );
   if (res.status !== 0) {
     throw new Error((res.stderr || res.error?.message || `agentapi exited ${res.status}`).trim().split(/\r?\n/)[0]);
@@ -959,12 +964,16 @@ export function runGatekeeper(configPath, deps = {}) {
       legacyMode: Boolean(deps.legacyMode),
     });
 
-    const send = deps.sendMessage ?? ((id, msg) => defaultSendMessage(id, msg, agentApi));
+    const sendTimeoutMs = Number.isInteger(config.sendTimeoutMs) && config.sendTimeoutMs >= 5_000
+      ? config.sendTimeoutMs
+      : DEFAULT_SEND_TIMEOUT_MS;
+    const send = deps.sendMessage ?? ((id, msg) => defaultSendMessage(id, msg, agentApi, sendTimeoutMs));
     const notify = deps.notify ?? ((t, m) => (platform === 'darwin' && !deps.sendMessage ? sendMacNotification(t, m) : false));
 
     const summaryParts = [];
     const sendFailedTitles = new Set();
     const lockedTitles = new Set();
+    const sendBackoffTitles = new Set();
     const committedPoStates = { ...prevPoStates };
 
     for (const action of actions) {
@@ -1003,6 +1012,22 @@ export function runGatekeeper(configPath, deps = {}) {
         continue;
       }
 
+      // Exponential backoff after repeated send-message timeouts (10m -> 20m -> 40m -> 60m cap),
+      // bypassed immediately on fresh restart so recovery is never delayed.
+      const prevSendFails = Number.isInteger(prevForPo.consecutiveSendFailures) ? prevForPo.consecutiveSendFailures : 0;
+      const lastSendFailMs = typeof prevForPo.lastSendFailedAtMs === 'number' ? prevForPo.lastSendFailedAtMs : 0;
+      const isRestartWake = Array.isArray(action.reasons) && action.reasons.includes('restart');
+      if (prevSendFails > 0 && lastSendFailMs > 0 && !isRestartWake) {
+        const waitMs = computeBackoffMs(prevSendFails, SEND_BACKOFF_BASE_MINUTES, SEND_BACKOFF_MAX_MINUTES);
+        if ((nowMs - lastSendFailMs) < waitMs) {
+          sendBackoffTitles.add(action.title);
+          action.skipped = 'send-backoff';
+          committedPoStates[stateKey] = prevForPo;
+          summaryParts.push(`${action.title}: send-backoff`);
+          continue;
+        }
+      }
+
       const lockKey = `${config.repo}-${action.conversationId || action.title}`;
       const lock = acquirePoLock(lockDir, lockKey, lockTtlMs, nowMs);
       if (!lock.acquired) {
@@ -1019,12 +1044,18 @@ export function runGatekeeper(configPath, deps = {}) {
           ...candidateForPo,
           lastSentAtMs: nowMs,
           lastSentAt: new Date(nowMs).toISOString(),
+          consecutiveSendFailures: 0,
+          lastSendFailedAtMs: null,
         };
         summaryParts.push(`${action.title}: woke (${tags})`);
       } catch (err) {
         process.stderr.write(`gatekeeper send error (${action.title}): ${err.message}\n`);
         sendFailedTitles.add(action.title);
-        committedPoStates[stateKey] = prevForPo;
+        committedPoStates[stateKey] = {
+          ...prevForPo,
+          consecutiveSendFailures: prevSendFails + 1,
+          lastSendFailedAtMs: nowMs,
+        };
         summaryParts.push(`${action.title}: send-failed`);
       } finally {
         releasePoLock(lock);
@@ -1046,9 +1077,10 @@ export function runGatekeeper(configPath, deps = {}) {
         conversationId: action.conversationId || null,
         skipped: action.skipped || null,
         reasons: action.reasons || [],
-        woke: Boolean(action.message && !dryRun && !sendFailedTitles.has(action.title) && !lockedTitles.has(action.title)),
+        woke: Boolean(action.message && !dryRun && !sendFailedTitles.has(action.title) && !lockedTitles.has(action.title) && !sendBackoffTitles.has(action.title)),
         wouldWake: Boolean(action.message && dryRun),
         sendFailed: sendFailedTitles.has(action.title),
+        sendBackoff: sendBackoffTitles.has(action.title),
         locked: lockedTitles.has(action.title),
         consecutiveUnansweredWakes: action.consecutiveUnansweredWakes ?? 0,
       })),
