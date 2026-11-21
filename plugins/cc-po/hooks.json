@@ -1,0 +1,25 @@
+{
+  "cc-po-checkin-cap": {
+    "PostToolUse": [
+      {
+        "matcher": "write_file|edit_file|write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./hooks/post-checkin-cap.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "cc-po-turn-status": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./hooks/agy-turn-status.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

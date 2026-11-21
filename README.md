@@ -122,13 +122,16 @@ What stays the same and what differs on Antigravity:
   (`TypeName: "research"`) when Hydrogen substep routing is allowed by the
   repository ("Models and Orchestrator" in `rules/AGENTS.md`). Under
   `po_wake: gatekeeper` (the default), each repository keeps one shared
-  Antigravity scheduled automation (`<repo owner>-<repo>-po-gatekeeper`)
-  running `skills/product-owner/agy-gatekeeper.mjs` every 30 minutes with
-  zero model tokens and zero extra sidebar conversations, waking only the POs
-  of that repository that match a gatekeeper reason
-  (`agentapi send-message`), enabled once by the owner in the Automations
-  dashboard (POs verify activation from both `~/.gemini/config/config.json`
-  and the current server run's `sidecar.log`).
+  Antigravity scheduled automation (`<repo owner>-<repo>-po-gatekeeper`,
+  `*/10` cron) running `skills/product-owner/agy-gatekeeper.mjs` (backed by
+  `gatekeeper-core.mjs`) with zero model tokens and zero extra sidebar
+  conversations—evaluating 6 multi-signal triggers with Profile Affinity Guard,
+  atomic lockfiles, 90-second debounce, `lastPlannerMs` tracking, and
+  exponential backoff (`agentapi send-message`), enabled once by the owner in
+  the Automations dashboard (POs verify activation from both
+  `~/.gemini/config/config.json` and the current server run's `sidecar.log`).
+  Native root `hooks.json` enforces the rolling `<= 6 KB` check-in cap and
+  records turn status (`ok`/`error`/`quota`) at zero tokens.
 
 ### Codex
 
@@ -848,6 +851,64 @@ Antigravity.
 - **Operational hygiene:** Formalizes fingerprinted `set_monitor` retries with
   exponential backoff and retry caps, rolling `<= 6 KB` check-in file caps, and
   `po:<runtime>` mutual-exclusion checks.
+
+### Upgrading to 2.18.0
+
+No required config change: existing configs using `gatekeeper_active_minutes`
+remain valid and backwards compatible. Update the plugin in Claude Code
+(`claude plugin update`) or re-copy `plugins/cc-po` into your Antigravity
+plugin folder and restart Antigravity.
+
+- **Multi-signal 0-token gatekeeper (`gatekeeper-core.mjs` + 10-minute
+  `agy-gatekeeper.mjs`):** Extracts a shared zero-dependency evaluator used by
+  both Antigravity and Claude Desktop. On Antigravity (`*/10` cron), evaluates
+  6 zero-token triggers (`restart`, `pr-state-changed` covering `CLEAN`,
+  `UNSTABLE`, `CHANGES_REQUESTED`, `DIRTY`, CI rollup and comments,
+  `subagent-stalled-or-errored`, `issue-dispatchable-or-owner-reply`,
+  `quota-recovery-probe`, and `safety-heartbeat`). Fixes `lastActivityMs` by
+  tracking `lastPlannerMs` (ignoring `SYSTEM_MESSAGE` wake echoes), adds 90s
+  debounce, auto-persists atomic `state.json` under
+  `ANTIGRAVITY_EXECUTABLE_DATA_DIR`, and applies exponential backoff
+  (`1h -> 2h -> 4h` + optional macOS alert) on unanswered wakes.
+- **Platform-aware heartbeats and new optional config keys:** Replaces the
+  one-size-fits-all "1-hour prompt cache" quiet rule (Gemini 4 implicit cache
+  TTL is ~2–5 min; Claude Desktop 30m cron + 60m quiet missed at 60–89 min).
+  Adds optional `gatekeeper_heartbeat_active_minutes` (default `180`),
+  `gatekeeper_heartbeat_idle_minutes` (default `720`),
+  `gatekeeper_cron_minutes` (`10` Antigravity / `30` Claude Desktop), and
+  `po_context_compact_tokens` (for example `120000`) to
+  [`config-schema.md`](plugins/cc-po/skills/product-owner/config-schema.md) and
+  `check-config.mjs`.
+- **Profile Affinity Guard & atomic lockfile:** `agy-gatekeeper.mjs` checks
+  `ANTIGRAVITY_PROFILE`, `ANTIGRAVITY_APP_DATA_DIR`, and
+  `ANTIGRAVITY_EXECUTABLE_DATA_DIR` against `brainDir` to refuse cross-profile
+  runs (for example an `acc2` sidecar targeting an `acc3` `brainDir`), and
+  acquires an atomic repo-level lockfile under `~/.claude/po-state/locks/`,
+  eliminating duplicate wakes and cross-profile `agentapi` timeouts.
+- **Antigravity native root `hooks.json` & rolling 6 KB archive:** Adds root
+  `plugins/cc-po/hooks.json` registering `PostToolUse`
+  (`hooks/post-checkin-cap.mjs`, which atomically rotates completed history
+  into sibling `*-archive.md` files on both Claude Code and Antigravity to keep
+  check-ins `<= 6144` bytes while preserving headers, `On every wake`, and
+  active `Live state`) and `Stop` (`hooks/agy-turn-status.mjs`, returning
+  `{"decision":"allow"}` and recording `ok`/`error`/`quota` turn status at zero
+  tokens without blocking tool calls).
+- **Claude Desktop Thin Haiku Relay (`claude-gatekeeper-eval.mjs`):** Haiku
+  scheduled tasks pass `list_sessions` JSON via `--sessions-stdin` (single-quoted
+  heredoc, avoiding shell injection and `ARG_MAX`) to one read-only
+  `claude-gatekeeper-eval.mjs` command at a stable version-free path, archiving
+  immediately in one minimal turn when `wakeList` is empty, while keeping the
+  stateless fallback template intact (unified on 180m active / 720m idle
+  heartbeats). Documents current Claude Code Layer-1 limits (`Monitor <= 1h`,
+  CLI-only `--channels`, cloud-sandbox Routines).
+- **Proactive PO context sawtooth control:** Guides POs to offload broad reads
+  (`gh project item-list`, audits, diffs/logs) to `research`/`flash` or
+  `run_workflow` and proactively `/compact` around ~100K–120K tokens (or
+  `po_context_compact_tokens`) without ever asking the owner.
+- **Antigravity sidecar migration (v2.17 → v2.18):** Update legacy half-hour
+  crons (`9,39`, `7,37`) in existing `sidecar.json` files to `*/10`, verify
+  each `*-agy-gatekeeper.json` sets `brainDir` for its own profile, and disable
+  any duplicate gatekeeper sidecar enabled on another profile.
 
 ## License
 

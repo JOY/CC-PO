@@ -125,20 +125,48 @@ Which model a sub-session gets, Orchestrator included: "Models and Orchestrator"
 ## Sidecar automations and multi-profile `agy-gatekeeper.mjs`
 
 - Under `po_wake: gatekeeper` (the default), keep **one** shared scheduled
-  automation per repository (or profile) at
+  automation per repository (and profile) at
   `~/.gemini/config/sidecars/<repo owner>-<repo>-po-gatekeeper/sidecar.json`
   (`"builtin": "schedule"`, `"restart_policy": "always"`,
   `"display_name": "PO gatekeeper (<owner/repo>)"`, and `"args":
-  ["CRON_TZ=<IANA zone> <m>,<m+30> * * * *", "<absolute node path>",
+  ["CRON_TZ=<IANA zone> */10 * * * *", "<absolute node path>",
   "<absolute plugin path>/skills/product-owner/agy-gatekeeper.mjs",
   "<po_check_in_dir>/<repo owner>-<repo>-agy-gatekeeper.json"]`).
-- On macOS multi-profile setups (`Antigravity Profiles/<profile>`), set
+- **10-minute multi-signal evaluation (`gatekeeper-core.mjs`):** Each run costs
+  zero model tokens, spawns zero sidebar chats, and evaluates 6 triggers:
+  `restart` (compared against `lastPlannerMs`—the last completed
+  `PLANNER_RESPONSE`, ignoring `SYSTEM_MESSAGE` wake echoes),
+  `pr-state-changed` (line PR fingerprint changes including `CLEAN`, `UNSTABLE`,
+  `CHANGES_REQUESTED`, `DIRTY`, CI rollup, and new comments),
+  `subagent-stalled-or-errored`, `issue-dispatchable-or-owner-reply`,
+  `quota-recovery-probe` (exponential backoff `30m -> 60m -> 120m` /
+  `1h -> 2h -> 4h` + optional macOS alert on `consecutiveUnansweredWakes >= 2`),
+  and `safety-heartbeat` (`180` min active / `720` min idle by default).
+- **Multi-profile safety (Profile Affinity Guard, atomic lockfile, 90s debounce):**
+  On macOS multi-profile setups (`Antigravity Profiles/<profile>`), set
   `ANTIGRAVITY_APP_DATA_DIR` (or `brainDir` in the gatekeeper JSON) and
   optionally `ANTIGRAVITY_AGENTAPI_EXE` / `AGENTAPI_BIN` (otherwise
   `agy-gatekeeper.mjs` auto-discovers profile `Antigravity (<profile>).app`
-  and `/Applications/Antigravity.app` binaries cleanly). Use `--dry-run` for
-  non-destructive inspection and `--state-file <path>` only if explicit
-  structured run-status persistence is wanted (default keeps no state file).
+  and `/Applications/Antigravity.app` binaries cleanly).
+  - **Profile Affinity Guard** compares the sidecar's runtime profile
+    (`ANTIGRAVITY_PROFILE`, `ANTIGRAVITY_APP_DATA_DIR`, and
+    `ANTIGRAVITY_EXECUTABLE_DATA_DIR`) against `brainDir` and refuses
+    cross-profile runs (for example an `acc2` sidecar pointing at `acc3`)
+    cleanly (`skipped: profile-mismatch`), preventing duplicate wakes and
+    `agentapi ETIMEDOUT` errors.
+  - **Atomic lockfile** (`~/.claude/po-state/locks/`, `wx` + owner-token
+    release + stale rename-before-unlink) serializes repo read-eval-write-send
+    cycles, and a **90-second debounce** window (`RUNNING_MTIME_WINDOW_MS = 90_000`,
+    overridable via `debounceSeconds`) avoids racing Antigravity's native
+    reactive wakeup.
+  - **State persistence:** Automatically reads/writes atomic `state.json` inside
+    `ANTIGRAVITY_EXECUTABLE_DATA_DIR` when set (or `--state-file <path>` when
+    passed explicitly); `--dry-run` inspects non-destructively without writing.
+  - **v2.18.0 migration checklist:** Update legacy half-hour schedules
+    (`9,39`, `7,37`) in existing `sidecar.json` files to `*/10`, verify every
+    `*-agy-gatekeeper.json` sets `brainDir` for its own profile, and disable any
+    duplicate gatekeeper sidecar enabled on another profile (for example `acc2`
+    vs `acc3`).
 - **Never hand-edit `~/.gemini/config/config.json` or `user_config.json`.**
   Only the owner enables or disables automations in
   `[Open Automations Dashboard](sidecar://dashboard)`. Treat the automation as
@@ -149,6 +177,44 @@ Which model a sub-session gets, Orchestrator included: "Models and Orchestrator"
   time) shows `Scheduler started` without a later stop or failure; otherwise
   report in the digest that the PO has no durable wake automation and point
   the owner to the dashboard.
+
+## Native hooks (`plugins/cc-po/hooks.json`)
+
+Antigravity loads native plugin hooks from the plugin root `hooks.json`
+(fail-open, 5-second timeout, zero model tokens) for **`PostToolUse`** and
+**`Stop`** only (`PostInvocation` is intentionally omitted so the hook never
+blocks every tool call in the agent loop):
+
+- **`PostToolUse` (file write/edit tools) → `hooks/post-checkin-cap.mjs`:**
+  Enforces the rolling `<= 6 KB` (`6144` bytes) cap on `*-po-checkin.md` files
+  by atomically rotating older completed/archived history into a sibling
+  `<base>-archive.md` file while preserving the metadata header, `On every wake`,
+  and active `Live state`.
+- **`Stop` → `hooks/agy-turn-status.mjs`:** Returns `{"decision":"allow"}` and
+  atomically writes `~/.claude/po-state/turn-status/<conversationId>.json`
+  (lowercase ID, auto-pruning entries older than 7 days) with
+  `status: "ok" | "error" | "quota"` so `agy-gatekeeper.mjs` can tell a clean
+  idle sleep apart from a quota-exhausted or failed turn without guessing.
+
+## PO context hygiene (sawtooth control)
+
+Because Gemini 4 uses implicit prompt caching (~2–5 min TTL), every cold wake
+pays full input tokens for the PO's live context:
+
+- **Delegate all broad reads:** Offload `gh project item-list`, sprint audits,
+  and log/diff sweeps to `invoke_subagent(TypeName: "research", Model: "flash")`
+  or `run_workflow`, returning only a compact JSON summary or digest (`<= 30`
+  lines) to the PO chat.
+- **Proactive `/compact` around ~100K–120K tokens:** Rather than letting PO
+  context climb toward ~300K before automatic compaction kicks in, proactively
+  run `/compact` once context approaches ~100K–120K (or
+  `po_context_compact_tokens` in config). Keep state on GitHub and in the
+  check-in file (`<= 6 KB`) so compaction is lossless, and never ask the owner
+  to compact or replace the PO session.
+- **Keep ephemeral jobs off the PO:** Run periodic non-conversational sweeps
+  (multi-repo morning digests, weekly P2/P3 cleanup triage) via ephemeral
+  `schedule` sidecars (`run_workflow` or `agentapi new-conversation --model=flash`)
+  instead of waking the long-lived PO.
 
 ## Commands, permissions, and restarts
 

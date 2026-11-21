@@ -13,11 +13,16 @@ costs as much as a real one. Real events already wake a PO at once: a
 sub-session's turn end, a message from another session, CI and review
 notifications on PRs it watches, a finished background command. A timer is
 only a safety net. Each gatekeeper run is a fresh, short session on the
-cheapest model. It wakes a PO that is not running when a restart cut it off,
-when a PR of its own line is ready that the PO has not seen, or when the PO has
-been quiet for the active window, so no PO sits idle behind a ready PR or a
-crash. A quiet PO is an anomaly to catch, and a wake inside the one-hour prompt
-cache is cheap, so the quiet wake does not wait for work in flight.
+cheapest model. In v2.18.0, the recommended **Thin Haiku Relay** mode runs one
+read-only `claude-gatekeeper-eval.mjs` command (sharing `gatekeeper-core.mjs`
+with Antigravity) using platform-aware heartbeats (`gatekeeper_heartbeat_active_minutes`
+default `180` min when work is in flight; `gatekeeper_heartbeat_idle_minutes`
+default `720` min when idle), avoiding the old 30-min cron + 60-min quiet
+mismatch (60–89 min actual gaps that missed Claude's 1-hour cache and woke idle
+POs for nothing). Where local Node script execution is unavailable, the
+stateless fallback prompt below wakes a PO that is not running when a restart
+cut it off, when a PR of its own line is ready that the PO has not seen, or
+when the PO has been quiet for the configured window.
 It reads no session's context size and sends no notice that asks the owner to
 compact a session or open a new PO session: a PO's context needs no owner
 action.
@@ -49,7 +54,9 @@ those in itself.
 | `<owner>` | `owner_name`. |
 | `<language>` | `report_language`. |
 | `<model>` | `gatekeeper_model` (default rolling `haiku`). |
-| `<active minutes>` | `gatekeeper_active_minutes` (default 60): how long a PO is quiet before it is woken for that, and how long a sub-session is idle before the wake message lists it. |
+| `<active minutes>` | `gatekeeper_active_minutes` (default 60): legacy/fallback quiet window and how long a sub-session is idle before the wake message lists it. |
+| `<heartbeat active minutes>` | `gatekeeper_heartbeat_active_minutes` (default 180): safety heartbeat for Thin Haiku Relay mode when a PO's line has work in flight (open PRs or active sub-sessions). |
+| `<heartbeat idle minutes>` | `gatekeeper_heartbeat_idle_minutes` (default 720): safety heartbeat for Thin Haiku Relay mode when a PO's line is completely idle (avoids waking idle lines every 60 minutes). |
 | `<po rows>` | One row per line of the Lines table that has a PO session: `<po title> \| line:<slug> \| <check-in file>`. The title is the table's PO session title; the check-in file is the one that PO already keeps, else `po_check_in_dir` with `~` expanded, then `<repo owner>-<repo>-<slug>-po-checkin.md`, written as `<task id>` is. A line whose PO session is `none` has no row. A PO that covers more than one line (the owner folded a small line into it) lists every label of those lines in the middle cell, separated by `, `: `line:<slug>, line:<other>`. The run counts only pull requests that carry one of the labels in the PO's own row. In the Lines table, the folded line's PO column reads `none (covered by <PO title>)`. |
 | `<restart check>` | The read-only command for the machine, from "Restart check" below, written exactly. |
 
@@ -95,7 +102,7 @@ Create the task with `create_scheduled_task`:
 - `title`: `PO gatekeeper (<owner/repo>)`, which the owner sees in the app's
   task list and which names the task's runs (add a few words in `<language>`
   when that is not English);
-- `description`: `Every 30 min: wake a <owner/repo> PO that is not running after a restart, with a ready PR of its line it has not seen, or after <active minutes> quiet minutes`;
+- `description`: `Every 30 min: wake a <owner/repo> PO that is not running after a restart, with a ready PR of its line it has not seen, or after the safety heartbeat (<heartbeat active minutes> min active / <heartbeat idle minutes> min idle)`;
 - `cronExpression`: `<m>,<m+30> * * * *` (local time), where `<m>` is a minute
   from 2 to 13 (7 unless another task on this machine already uses it), so
   the run never fires on the hour or half hour, when many in-session timers
@@ -128,7 +135,7 @@ You are the gatekeeper of the Product Owner (PO) sessions of the <owner/repo> re
 The POs of this repository (title, label, check-in file):
 <po rows>
 
-Report the owner as <owner>, language <language>. Settings: quiet or idle after <active minutes> min.
+Report the owner as <owner>, language <language>. Settings: safety heartbeat <heartbeat active minutes> min active / <heartbeat idle minutes> min idle (legacy quiet or idle sub-session threshold <active minutes> min).
 
 Steps:
 1. Call `mcp__ccd_session_mgmt__list_sessions` once, with limit 200 and archived sessions left out. For each PO above, take the non-archived session whose title is exactly the PO title; a PO with none, or with two, is skipped (write that in one line). Each row normally has `isRunning`, `lastActivityAt` and `startedBy`; only if a row lacks one, call `mcp__ccd_session_mgmt__get_session` for that session only. Take the current UTC time as <now>.
@@ -138,7 +145,7 @@ Steps:
 5. For each candidate PO, in the order listed, wake it when ANY of these holds, and name every one that holds in the message:
    (a) restart: the boot time or the app start time is LATER than the PO's `lastActivityAt`.
    (b) unseen ready PR: an open pull request that carries one of the PO's own line labels (the labels in its row; a pull request of any other line never counts, whoever's it is) has `mergeStateStatus` CLEAN or UNSTABLE and an `updatedAt` LATER than the PO's `lastActivityAt`, so the PO has not acted since it became ready. There is no waiting time.
-   (c) quiet: the PO's `lastActivityAt` is <active minutes> minutes or more before <now>, whether or not its line has work in flight (a PO that is quiet for that long is unusual, and a wake costs little inside the prompt cache). This wakes every PO after a crash or restart, and at most once per active window while a PO is idle.
+   (c) quiet: the PO's `lastActivityAt` is <active minutes> minutes or more before <now>, whether or not its line has work in flight. Under v2.18.0 platform-aware heartbeats, use <heartbeat active minutes> (default 180) when the PO's line has open PRs or active sub-sessions, and <heartbeat idle minutes> (default 720) when the line is idle (legacy configs without those keys fall back to <active minutes>). This wakes every PO after a crash or restart without waking idle lines every 60 minutes.
    If none holds, do not wake it.
 6. Send. For each PO you wake, send ONE message with `mcp__ccd_session_mgmt__send_message` to its session id; if that is refused, call `SendMessage` with `to` set to that session id and the same text. If both fail, write the error in one line; the next run tries again.
    Wake text, with the values filled in:
@@ -188,3 +195,68 @@ Live state (update when it changes):
 
 Live state is a cache for the PO's next turn. GitHub stays the record: the
 digest is built from GitHub, never from this file.
+
+## Thin Haiku Relay mode (v2.18.0, recommended when Node is available)
+
+Instead of running ad-hoc shell comparisons inside the Haiku prompt and waking
+idle POs every 60 minutes, a Claude Desktop scheduled task can act as a **Thin
+Haiku Relay** over the shared 0-token evaluator (`claude-gatekeeper-eval.mjs` +
+`gatekeeper-core.mjs`).
+
+**Security & stability rules for Thin Haiku Relay:**
+- **Always pass session JSON via `--sessions-stdin` with a single-quoted
+  heredoc (`<<'EOF'`)** — never pass `--sessions-json '<json>'` inline on the
+  shell command line, because session titles are untrusted data that can
+  contain single quotes (shell injection / syntax break) or exceed Windows
+  `ARG_MAX` (8,191 chars).
+- **Never hardcode a versioned plugin cache path** (such as `.../2.18.0/...`):
+  point to a stable, version-free path (for example a stable launcher/symlink
+  under `~/.claude/po-state/` or the latest installed `cc-po` skill directory
+  resolved without a pinned version segment) so plugin updates do not break the
+  task or invalidate the owner's "always allow" approval.
+- **Keep read-only default (no `--state-file`):** omit `--state-file` so the
+  task writes no file outside the project folder and preserves the no-state-file
+  invariant.
+
+Complete Thin Haiku Relay prompt template (fill `<owner/repo>`, `<owner>`,
+`<language>`, `<heartbeat active minutes>`, `<heartbeat idle minutes>`,
+`<stable eval script path>`, and `<pos json>`):
+
+```text
+You are the Thin Haiku Relay gatekeeper of the Product Owner (PO) sessions of
+<owner/repo>. Your only job is to run the read-only evaluator, wake any PO
+listed in wakeList, and archive yourself. Do nothing else: no repository, git,
+cloud or file writes, and no message to any session not in wakeList.
+
+Steps:
+1. Call `mcp__ccd_session_mgmt__list_sessions` once (limit 200, archived left
+   out). Only if a matching PO row lacks `isRunning`, `lastActivityAt`, or
+   `startedBy`, call `mcp__ccd_session_mgmt__get_session` for that session only.
+2. Run ONE read-only evaluator command, piping the compact `list_sessions` JSON
+   array over stdin with a single-quoted heredoc (never embed session JSON in a
+   CLI flag):
+
+   node "<stable eval script path>" \
+     --repo <owner/repo> \
+     --owner "<owner>" \
+     --language "<language>" \
+     --pos-json '<pos json>' \
+     --heartbeat-active <heartbeat active minutes> \
+     --heartbeat-idle <heartbeat idle minutes> \
+     --sessions-stdin \
+     --json <<'EOF'
+   <raw list_sessions JSON array>
+   EOF
+
+3. If `wakeList` in the JSON output is empty, write one short summary line and
+   go directly to step 5 (1 minimal turn, zero PO wakes).
+4. For each item in `wakeList`, send ONE message with
+   `mcp__ccd_session_mgmt__send_message` (fallback `SendMessage`) using its
+   `sessionId` and `message`.
+5. Call `mcp__ccd_session_mgmt__archive_session` with session_id "self" and
+   reason "gatekeeper run finished".
+
+If the evaluator command is unavailable on this machine, fall back to the
+stateless read-only prompt above using <heartbeat active minutes> (active) and
+<heartbeat idle minutes> (idle).
+```

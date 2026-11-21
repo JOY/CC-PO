@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Runs one Antigravity Product Owner gatekeeper pass for a repository,
-// matching gatekeeper-template.md without spawning sidebar conversations or
-// spending model tokens. Supports macOS multi-profile setups, --dry-run,
-// optional --state-file status snapshots, and --json structured output.
-// No dependencies.
+// using the shared 0-token multi-signal engine in gatekeeper-core.mjs without
+// spawning sidebar conversations or spending model tokens. Supports macOS
+// multi-profile setups, Profile Affinity Guard, atomic lockfiles, persistent
+// state via ANTIGRAVITY_EXECUTABLE_DATA_DIR or --state-file, --dry-run, and --json.
+// No external dependencies.
 //
 //   node agy-gatekeeper.mjs <gatekeeper-config.json> [--dry-run] [--state-file <path>] [--json]
 //
@@ -12,40 +13,50 @@
 //     "repo": "<owner/repo>",
 //     "owner": "<owner_name>",
 //     "language": "<report_language>",
-//     "activeMinutes": 60,        (a PO quiet this long is woken; a sub-session idle this long is listed)
+//     "heartbeatActiveMinutes": 180,   (optional; default 180 in multi-signal mode)
+//     "heartbeatIdleMinutes": 720,     (optional; default 720 in multi-signal mode)
+//     "subagentStallMinutes": 30,      (optional; default 30)
+//     "debounceSeconds": 90,           (optional; default 90)
+//     "activeMinutes": 60,             (legacy window when multiSignal is not enabled)
 //     "pos": [
 //       { "title": "<PO session>", "conversationId": "<uuid>", "label": "line:<slug>", "checkInFile": "<path>" }
 //     ]
 //   }
-// Unknown or legacy config keys (stateFile, quietHours, quietMinutes, coordinatorLabel, compactTokens, handoffTokens) are ignored:
-// the gatekeeper keeps no state file unless --state-file is explicitly passed, and uses each PO's last activity as its memory.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, uptime } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  acquirePoLock,
+  checkProfileAffinity,
+  DEFAULT_DEBOUNCE_MS,
+  DEFAULT_LOCK_TTL_MS,
+  DEFAULT_STALE_RUNNING_MS,
+  evaluateSignals,
+  expandHome,
+  inferProfileName,
+  isMultiSignalMode,
+  parseTimeMs,
+  readJsonState,
+  releasePoLock,
+  writeJsonStateAtomic,
+} from './gatekeeper-core.mjs';
+
+export { expandHome, inferProfileName };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BARE_UUID_GLOBAL_RE = /(?<![A-Za-z0-9_-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![A-Za-z0-9_-])/gi;
 const REPO_RE = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const ACTIVE_STEP_STATUSES = new Set(['RUNNING', 'PENDING', 'IN_PROGRESS']);
-const RUNNING_MTIME_WINDOW_MS = 15_000;
-const STALE_RUNNING_MS = 15 * 60_000;
-
-export function expandHome(filePath, home = homedir()) {
-  if (typeof filePath !== 'string') return '';
-  if (filePath === '~') return home;
-  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) {
-    return join(home, filePath.slice(2));
-  }
-  return filePath;
-}
-
-function parseTimeMs(value) {
-  if (!value || value === 'none' || value === 'never') return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
+const ERROR_STEP_STATUSES = new Set(['ERROR', 'FAILED', 'INVALID', 'CANCELLED', 'CANCELED']);
+const WAITING_STEP_STATUSES = new Set(['WAITING', 'WAITING_FOR_USER', 'BLOCKED', 'PENDING_APPROVAL']);
+const WAITING_STEP_TYPES = new Set(['ASK_USER', 'USER_APPROVAL', 'PERMISSION_REQUEST']);
+const WAKE_STEP_TYPES = new Set(['SYSTEM_MESSAGE', 'USER_INPUT']);
+const QUOTA_ERROR_RE = /quota|rate[_\s-]?limit|429|exhausted|capacity|overloaded/i;
+const BACKOFF_ALERT_COOLDOWN_MS = 4 * 60 * 60_000;
+export const RUNNING_MTIME_WINDOW_MS = DEFAULT_DEBOUNCE_MS;
+const STALE_RUNNING_MS = DEFAULT_STALE_RUNNING_MS;
 
 function unquoteArg(value) {
   if (typeof value !== 'string') return '';
@@ -62,15 +73,6 @@ function unquoteArg(value) {
 
 function cleanCellTitle(title) {
   return String(title ?? '').replace(/[|\r\n]+/g, ' ').trim();
-}
-
-export function inferProfileName(...hints) {
-  for (const hint of hints) {
-    if (typeof hint !== 'string' || !hint) continue;
-    const match = hint.match(/Antigravity Profiles[\\/]([^\\/]+)/i);
-    if (match && match[1]) return match[1];
-  }
-  return null;
 }
 
 function inferProfilesBase(...hints) {
@@ -157,7 +159,43 @@ export function extractActiveCheckInIds(checkInText, excludedIds = new Set()) {
   return ids;
 }
 
-export function inspectConversation(brainDir, conversationId, nowMs = Date.now()) {
+export function readTurnStatus(conversationId, { turnStatusDir = '', env = process.env, home = homedir() } = {}) {
+  if (typeof conversationId !== 'string' || !UUID_RE.test(conversationId)) return null;
+  const dir = turnStatusDir
+    || (typeof env?.CC_PO_TURN_STATUS_DIR === 'string' && env.CC_PO_TURN_STATUS_DIR.trim())
+    || join(home, '.claude', 'po-state', 'turn-status');
+  const filePath = join(expandHome(dir, home), `${conversationId.toLowerCase()}.json`);
+  if (!existsSync(filePath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return null;
+    const status = String(parsed.status ?? '').toLowerCase();
+    if (!['ok', 'error', 'quota'].includes(status)) return null;
+    return {
+      conversationId: conversationId.toLowerCase(),
+      status,
+      updatedAt: parsed.updatedAt || '',
+      updatedAtMs: parseTimeMs(parsed.updatedAt),
+      event: parsed.event || '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function classifyErrorText(text) {
+  return QUOTA_ERROR_RE.test(String(text || '')) ? 'quota' : 'error';
+}
+
+export function isGatekeeperWakeText(content, stepType = 'USER_INPUT') {
+  if (typeof content !== 'string') return false;
+  if (String(stepType || '').toUpperCase() === 'SYSTEM_MESSAGE') {
+    return /(?:^|\bcontent=|\n)\s*Gatekeeper wake at\s+/i.test(content);
+  }
+  return /^\s*Gatekeeper wake at\s+/i.test(content);
+}
+
+export function inspectConversation(brainDir, conversationId, nowMs = Date.now(), options = {}) {
   if (!brainDir || typeof conversationId !== 'string' || !UUID_RE.test(conversationId)) return null;
   const id = conversationId.toLowerCase();
   const transcriptPath = join(expandHome(brainDir), id, '.system_generated', 'logs', 'transcript.jsonl');
@@ -174,6 +212,13 @@ export function inspectConversation(brainDir, conversationId, nowMs = Date.now()
 
   const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
   let lastStep = null;
+  let lastPlannerMs = null;
+  let consecutiveUnansweredWakes = 0;
+  let lastWakeAtMs = null;
+  let lastErrorType = null;
+  let sentMessageInCurrentTurn = false;
+  let askedUserPending = false;
+
   const spawnedSubagents = [];
   const pendingByStepIndex = new Map();
   const pendingSubagentQueue = [];
@@ -186,14 +231,30 @@ export function inspectConversation(brainDir, conversationId, nowMs = Date.now()
       continue;
     }
     lastStep = step;
-    if (step.type === 'PLANNER_RESPONSE') {
+    const stepType = String(step.type ?? '').toUpperCase();
+    const stepStatus = String(step.status ?? '').toUpperCase();
+    const createdMs = parseTimeMs(step.created_at);
+
+    if (stepType === 'PLANNER_RESPONSE') {
+      const isErrStatus = ERROR_STEP_STATUSES.has(stepStatus);
+      if (!isErrStatus) {
+        if (createdMs !== null) lastPlannerMs = createdMs;
+        consecutiveUnansweredWakes = 0;
+        lastWakeAtMs = null;
+        lastErrorType = null;
+        askedUserPending = false;
+      } else {
+        lastErrorType = classifyErrorText(step.content || step.error || stepStatus);
+      }
+
       if (Array.isArray(step.tool_calls)) {
         pendingByStepIndex.clear();
         pendingSubagentQueue.length = 0;
         const baseIndex = Number.isInteger(step.step_index) ? step.step_index : null;
         for (let i = 0; i < step.tool_calls.length; i += 1) {
           const call = step.tool_calls[i];
-          if (call?.name === 'invoke_subagent') {
+          const toolName = String(call?.name ?? '');
+          if (toolName === 'invoke_subagent') {
             const spec = {
               typeName: unquoteArg(call.args?.TypeName),
               role: unquoteArg(call.args?.Role) || 'subagent',
@@ -202,100 +263,182 @@ export function inspectConversation(brainDir, conversationId, nowMs = Date.now()
               pendingByStepIndex.set(baseIndex + 1 + i, spec);
             }
             pendingSubagentQueue.push(spec);
+          } else if (toolName === 'send_message' || toolName === 'SendMessage') {
+            sentMessageInCurrentTurn = true;
+          } else if (toolName === 'ask_question' || toolName === 'AskUserQuestion') {
+            askedUserPending = true;
           }
         }
       }
-    } else if ((pendingByStepIndex.size > 0 || pendingSubagentQueue.length > 0) && typeof step.content === 'string') {
-      const hasIndexed = Number.isInteger(step.step_index) && pendingByStepIndex.has(step.step_index);
-      if (step.content.includes('Created the following subagent:')) {
-        let spec = null;
-        if (hasIndexed) {
-          spec = pendingByStepIndex.get(step.step_index);
+    } else if (stepType === 'ERROR_MESSAGE') {
+      lastErrorType = classifyErrorText(step.content || step.error || '');
+    } else {
+      if (WAKE_STEP_TYPES.has(stepType)) {
+        sentMessageInCurrentTurn = false;
+        if (stepType === 'USER_INPUT') askedUserPending = false;
+        if (isGatekeeperWakeText(step.content, stepType)) {
+          consecutiveUnansweredWakes += 1;
+          if (createdMs !== null) lastWakeAtMs = createdMs;
+        }
+      }
+
+      if ((pendingByStepIndex.size > 0 || pendingSubagentQueue.length > 0) && typeof step.content === 'string') {
+        const hasIndexed = Number.isInteger(step.step_index) && pendingByStepIndex.has(step.step_index);
+        if (step.content.includes('Created the following subagent:')) {
+          let spec = null;
+          if (hasIndexed) {
+            spec = pendingByStepIndex.get(step.step_index);
+            pendingByStepIndex.delete(step.step_index);
+            const qIdx = pendingSubagentQueue.indexOf(spec);
+            if (qIdx !== -1) pendingSubagentQueue.splice(qIdx, 1);
+          } else {
+            spec = pendingSubagentQueue.shift() ?? null;
+          }
+          const m = step.content.match(/"conversationId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i);
+          if (m && spec?.typeName === 'self') {
+            spawnedSubagents.push({ conversationId: m[1].toLowerCase(), role: spec.role });
+          }
+        } else if (hasIndexed) {
+          const spec = pendingByStepIndex.get(step.step_index);
           pendingByStepIndex.delete(step.step_index);
           const qIdx = pendingSubagentQueue.indexOf(spec);
           if (qIdx !== -1) pendingSubagentQueue.splice(qIdx, 1);
-        } else {
-          spec = pendingSubagentQueue.shift() ?? null;
+        } else if (stepStatus === 'ERROR' && /subagent/i.test(step.content)) {
+          pendingSubagentQueue.shift();
         }
-        const m = step.content.match(/"conversationId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i);
-        if (m && spec?.typeName === 'self') {
-          spawnedSubagents.push({ conversationId: m[1].toLowerCase(), role: spec.role });
-        }
-      } else if (hasIndexed) {
-        const spec = pendingByStepIndex.get(step.step_index);
-        pendingByStepIndex.delete(step.step_index);
-        const qIdx = pendingSubagentQueue.indexOf(spec);
-        if (qIdx !== -1) pendingSubagentQueue.splice(qIdx, 1);
-      } else if (step.status === 'ERROR' && /subagent/i.test(step.content)) {
-        pendingSubagentQueue.shift();
       }
     }
   }
 
-  const stepMs = parseTimeMs(lastStep?.created_at);
-  const lastActivityMs = stepMs ?? stat.mtimeMs;
-  const latestTouchMs = Math.max(lastActivityMs, stat.mtimeMs);
-  const stepRunning = ACTIVE_STEP_STATUSES.has(String(lastStep?.status ?? '').toUpperCase());
-  const mtimeRunning = nowMs - stat.mtimeMs >= 0 && nowMs - stat.mtimeMs < RUNNING_MTIME_WINDOW_MS;
+  const lastStepMs = parseTimeMs(lastStep?.created_at) ?? stat.mtimeMs;
+  const effectivePlannerMs = lastPlannerMs ?? lastStepMs;
+  const latestTouchMs = Math.max(lastStepMs, stat.mtimeMs);
+  const lastStepStatus = String(lastStep?.status ?? '').toUpperCase();
+  const lastStepType = String(lastStep?.type ?? '').toUpperCase();
+  const debounceMs = Number.isFinite(Number(options.debounceMs))
+    ? Number(options.debounceMs)
+    : RUNNING_MTIME_WINDOW_MS;
+
+  const stepRunning = ACTIVE_STEP_STATUSES.has(lastStepStatus);
+  const mtimeRunning = nowMs - stat.mtimeMs >= 0 && nowMs - stat.mtimeMs < debounceMs;
   const freshStepRunning = stepRunning && (nowMs - latestTouchMs < STALE_RUNNING_MS);
+
+  // Fail-open turn-status metadata written by Antigravity PostInvocation/Stop hook.
+  let lastTurnStatus = lastErrorType;
+  const turnStatus = options.readTurnStatus === false
+    ? null
+    : readTurnStatus(id, {
+      turnStatusDir: options.turnStatusDir,
+      env: options.env,
+      home: options.home,
+    });
+  if (turnStatus) {
+    const statusFresh = turnStatus.updatedAtMs === null || (turnStatus.updatedAtMs + 60_000) >= effectivePlannerMs;
+    if (statusFresh) {
+      lastTurnStatus = turnStatus.status;
+      if (turnStatus.status === 'quota' || turnStatus.status === 'error') {
+        lastErrorType = turnStatus.status;
+      }
+    }
+  }
+
+  const hasError = lastStepType === 'ERROR_MESSAGE'
+    || ERROR_STEP_STATUSES.has(lastStepStatus)
+    || lastErrorType === 'error'
+    || lastErrorType === 'quota';
+  const waitingForUser = WAITING_STEP_STATUSES.has(lastStepStatus)
+    || WAITING_STEP_TYPES.has(lastStepType)
+    || askedUserPending;
+  const sentMessageToPoAfterLastTurn = sentMessageInCurrentTurn;
 
   return {
     conversationId: id,
-    lastActivityMs,
+    lastActivityMs: effectivePlannerMs,
+    lastStepMs,
+    lastPlannerMs: effectivePlannerMs,
     mtimeMs: stat.mtimeMs,
-    lastActivityAt: new Date(lastActivityMs).toISOString(),
+    lastActivityAt: new Date(effectivePlannerMs).toISOString(),
     stepRunning,
     mtimeRunning,
     isRunning: freshStepRunning || mtimeRunning,
+    consecutiveUnansweredWakes,
+    lastWakeAtMs,
+    lastErrorType,
+    lastTurnStatus,
+    hasError,
+    waitingForUser,
+    sentMessageToPoAfterLastTurn,
     spawnedSubagents,
   };
 }
 
-function isSessionLiveRunning(session, latestRestartMs, nowMs) {
-  if (!session) return false;
-  const mtimeMs = typeof session.mtimeMs === 'number' ? session.mtimeMs : session.lastActivityMs;
-  const latestTouchMs = Math.max(session.lastActivityMs, mtimeMs);
-  if (typeof session.stepRunning === 'boolean' || typeof session.mtimeRunning === 'boolean') {
-    const postRestartMtime = Boolean(session.mtimeRunning) && (latestRestartMs <= 0 || mtimeMs >= latestRestartMs);
-    const postRestartStep = Boolean(session.stepRunning)
-      && (latestRestartMs <= 0 || session.lastActivityMs >= latestRestartMs)
-      && (nowMs - latestTouchMs < STALE_RUNNING_MS);
-    return postRestartMtime || postRestartStep;
-  }
-  if (!session.isRunning) return false;
-  if (latestRestartMs > 0 && latestRestartMs > latestTouchMs) return false;
-  return (nowMs - latestTouchMs) < STALE_RUNNING_MS;
-}
-
-function prLabelNames(pr) {
-  return (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean);
-}
-
-// Wake rule (matches gatekeeper-template.md): for each PO that is not running,
-// wake it when ANY of these holds, and name all that hold:
-//   (a) restart: boot or app start is later than the PO's last activity;
-//   (b) unseen ready PR: an open, non-draft PR carrying one of the PO's own line
-//       labels is CLEAN or UNSTABLE and was updated after the PO's last activity
-//       (no waiting time); no other PO's PR counts;
-//   (c) quiet: the PO's last activity is activeMinutes or more before now,
-//       whether or not its line has work in flight.
-// No context notice is sent: a PO's context needs no owner action.
-export function evaluateGatekeeper({ config, poInspections, restartTimes, openPrs, nowMs = Date.now() }) {
-  const nowIso = new Date(nowMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const activeMinutes = Number.isInteger(config.activeMinutes) ? config.activeMinutes : 60;
+function buildWakeMessage({ po, config, evalResult, restartTimes, nowIso, useMultiSignal }) {
   const owner = config.owner || 'owner';
   const language = config.language || 'English';
-  const activeWindowMs = activeMinutes * 60_000;
+  const { reasons, readyPrs, changedPrs, stalledSubs, triggeredIssues, idleSubs, restartAfterActivity } = evalResult;
 
-  const bootMs = parseTimeMs(restartTimes?.bootTime);
-  const appStartMs = parseTimeMs(restartTimes?.appStartTime);
-  const latestRestartMs = Math.max(bootMs ?? -1, appStartMs ?? -1);
+  const readyText = readyPrs === null
+    ? 'unknown, the gh query failed'
+    : (readyPrs.length > 0 ? readyPrs.map((pr) => `#${pr.number} (${pr.mergeStateStatus})`).join(', ') : 'none');
+  const idleText = idleSubs.length > 0
+    ? idleSubs
+      .map((sub) => `${sub.role || sub.conversationId.slice(0, 8)} (${sub.conversationId}, idle ${Math.floor((Date.parse(nowIso) - sub.lastActivityMs) / 60_000)} min)`)
+      .join('; ')
+    : 'none';
 
-  const validOpenPrs = Array.isArray(openPrs)
-    ? openPrs.filter((pr) => Number.isInteger(pr?.number) && pr.number > 0)
-    : null;
+  let message = `Gatekeeper wake at ${nowIso} (reasons: ${reasons.join(', ')}). Ready PRs of your line: ${readyText}. Idle sub-sessions of your line: ${idleText}. Do one short turn: merge or review the ready PRs, feed or archive the idle sub-sessions, resume work a crash cut off, answer messages. Then end the turn. Keep no check-in schedule loop: the gatekeeper and real events wake you. Your check-in file is ${po.checkInFile || 'none'}; use the one you already keep if it differs. Read only what this needs.`;
+
+  if (useMultiSignal) {
+    if (changedPrs.length > 0) {
+      const detail = changedPrs.map((pr) => {
+        const flags = [pr.mergeStateStatus];
+        if (pr.reviewDecision) flags.push(pr.reviewDecision);
+        if (pr.ciFail > 0) flags.push(`CI fail:${pr.ciFail}`);
+        if (pr.hasNewComment) flags.push('new-comment');
+        return `#${pr.number} (${flags.join(', ')})`;
+      }).join(', ');
+      message += ` Changed PRs: ${detail}.`;
+    }
+    if (stalledSubs.length > 0) {
+      const detail = stalledSubs
+        .map((s) => `${s.role} (${s.conversationId}, ${s.kind}, idle ${s.idleMinutes}m)`)
+        .join('; ');
+      message += ` Subagents needing attention: ${detail}.`;
+    }
+    if (triggeredIssues.length > 0) {
+      const detail = triggeredIssues.map((i) => `#${i.number} (${i.trigger})`).join(', ');
+      message += ` Issues needing attention: ${detail}.`;
+    }
+    if (evalResult.signals?.quotaRecoveryProbe) {
+      message += ' Quota recovery probe: verify model quota availability and resume paused subagents if recovered.';
+    }
+  }
+
+  if (restartAfterActivity) {
+    message += ` Machine boot ${restartTimes?.bootTime || 'unknown'}, app start ${restartTimes?.appStartTime || 'unknown'}. A restart stopped active processes and subagents. Tell ${owner} in ${language} on the first line that you are back and how long you were away, recreate any one-shot you had pending, and resume every subagent that had pending work.`;
+  }
+
+  return message;
+}
+
+// Evaluates all configured POs using gatekeeper-core.mjs.
+// Honors legacy activeMinutes mode when no v2.18 multi-signal config/state/issues are provided.
+export function evaluateGatekeeper({
+  config,
+  poInspections,
+  restartTimes,
+  openPrs,
+  openIssues = null,
+  prevState = null,
+  nowMs = Date.now(),
+  legacyMode = false,
+}) {
+  const nowIso = new Date(nowMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const prevPoStates = prevState?.poStates && typeof prevState.poStates === 'object' ? prevState.poStates : {};
+  const useMultiSignal = isMultiSignalMode(config, { legacyMode });
 
   const actions = [];
+  const nextPoStates = {};
 
   for (const po of config.pos ?? []) {
     const title = cleanCellTitle(po.title);
@@ -306,67 +449,56 @@ export function evaluateGatekeeper({ config, poInspections, restartTimes, openPr
       continue;
     }
 
-    const lastActivityMs = inspection.po.lastActivityMs;
-    if (isSessionLiveRunning(inspection.po, latestRestartMs, nowMs)) {
-      actions.push({ title, skipped: 'running' });
-      continue;
-    }
-
-    // The line's ready PRs (all of them, for the message) and the unseen ones (for reason b).
-    let readyPrs = null;
-    if (validOpenPrs !== null) {
-      const poLabels = Array.isArray(po.labels)
-        ? po.labels
-        : (po.label && po.label !== 'none' ? [po.label] : []);
-      const ownPrs = validOpenPrs.filter((pr) => {
-        const names = prLabelNames(pr);
-        return poLabels.some((lbl) => names.includes(lbl));
-      });
-      readyPrs = ownPrs.filter((pr) => pr.mergeStateStatus === 'CLEAN' || pr.mergeStateStatus === 'UNSTABLE');
-    }
-
-    const reasons = [];
-    const restartAfterActivity = latestRestartMs > 0 && latestRestartMs > lastActivityMs;
-    if (restartAfterActivity) reasons.push('restart');
-    const unseen = (readyPrs ?? []).filter((pr) => {
-      const updatedMs = parseTimeMs(pr.updatedAt);
-      return updatedMs !== null && updatedMs > lastActivityMs;
+    const stateKey = inspection.po.conversationId || title;
+    const prevPoState = prevPoStates[stateKey] || prevPoStates[title] || null;
+    const evalResult = evaluateSignals({
+      po,
+      session: inspection.po,
+      subSessions: inspection.subSessions ?? [],
+      restartTimes,
+      openPrs,
+      openIssues,
+      prevPoState,
+      config,
+      nowMs,
+      multiSignal: useMultiSignal,
     });
-    if (unseen.length > 0) reasons.push('unseen ready PR');
-    const idleMs = nowMs - lastActivityMs;
-    if (idleMs >= activeWindowMs) reasons.push(`quiet for ${Math.floor(idleMs / 60_000)} minutes`);
 
-    if (reasons.length === 0) {
-      actions.push({ title, skipped: 'no-reason' });
+    nextPoStates[stateKey] = evalResult.nextPoState;
+
+    if (!evalResult.shouldWake) {
+      actions.push({
+        title,
+        conversationId: inspection.po.conversationId,
+        skipped: evalResult.skipped,
+        consecutiveUnansweredWakes: evalResult.consecutiveUnansweredWakes,
+        shouldAlertBackoff: evalResult.shouldAlertBackoff,
+        backoffRemainingMs: evalResult.backoffRemainingMs,
+      });
       continue;
     }
 
-    const idleSubs = (inspection.subSessions ?? []).filter(
-      (sub) => !isSessionLiveRunning(sub, latestRestartMs, nowMs) && (nowMs - sub.lastActivityMs) > activeWindowMs,
-    );
-    const readyText = readyPrs === null
-      ? 'unknown, the gh query failed'
-      : (readyPrs.length > 0 ? readyPrs.map((pr) => `#${pr.number} (${pr.mergeStateStatus})`).join(', ') : 'none');
-    const idleText = idleSubs.length > 0
-      ? idleSubs
-        .map((sub) => `${sub.role || sub.conversationId.slice(0, 8)} (${sub.conversationId}, idle ${Math.floor((nowMs - sub.lastActivityMs) / 60_000)} min)`)
-        .join('; ')
-      : 'none';
-
-    let message = `Gatekeeper wake at ${nowIso} (reasons: ${reasons.join(', ')}). Ready PRs of your line: ${readyText}. Idle sub-sessions of your line: ${idleText}. Do one short turn: merge or review the ready PRs, feed or archive the idle sub-sessions, resume work a crash cut off, answer messages. Then end the turn. Keep no check-in schedule loop: the gatekeeper and real events wake you. Your check-in file is ${po.checkInFile || 'none'}; use the one you already keep if it differs. Read only what this needs.`;
-    if (restartAfterActivity) {
-      message += ` Machine boot ${restartTimes?.bootTime || 'unknown'}, app start ${restartTimes?.appStartTime || 'unknown'}. A restart stopped active processes and subagents. Tell ${owner} in ${language} on the first line that you are back and how long you were away, recreate any one-shot you had pending, and resume every subagent that had pending work.`;
-    }
+    const message = buildWakeMessage({
+      po,
+      config,
+      evalResult,
+      restartTimes,
+      nowIso,
+      useMultiSignal,
+    });
 
     actions.push({
       title,
       conversationId: inspection.po.conversationId,
-      reasons,
+      reasons: evalResult.reasons,
+      signals: evalResult.signals,
+      consecutiveUnansweredWakes: evalResult.consecutiveUnansweredWakes,
+      shouldAlertBackoff: evalResult.shouldAlertBackoff,
       message,
     });
   }
 
-  return { actions };
+  return { actions, nextPoStates, multiSignal: useMultiSignal };
 }
 
 function commandForBinary(binPath) {
@@ -408,9 +540,9 @@ export function resolveAgentApiCommand(env = process.env, platform = process.pla
   if (platform === 'darwin') {
     const profile = options.profile
       || env?.ANTIGRAVITY_PROFILE
-      || inferProfileName(env?.ANTIGRAVITY_APP_DATA_DIR, options.appDataDir, options.brainDir, options.scriptPath);
+      || inferProfileName(env?.ANTIGRAVITY_APP_DATA_DIR, env?.ANTIGRAVITY_EXECUTABLE_DATA_DIR, options.execDataDir, options.appDataDir, options.brainDir, options.scriptPath);
     const profilesBase = options.profilesBase
-      || inferProfilesBase(env?.ANTIGRAVITY_APP_DATA_DIR, options.appDataDir, options.brainDir, options.scriptPath)
+      || inferProfilesBase(env?.ANTIGRAVITY_APP_DATA_DIR, env?.ANTIGRAVITY_EXECUTABLE_DATA_DIR, options.execDataDir, options.appDataDir, options.brainDir, options.scriptPath)
       || join(home, 'Library', 'Application Support', 'Antigravity Profiles');
 
     if (profile) {
@@ -554,15 +686,37 @@ export function defaultRestartTimes(profile = null, execSync = spawnSync) {
   return { bootTime: bootIso, appStartTime: '' };
 }
 
-function defaultQueryOpenPrs(repo) {
+export function defaultQueryOpenPrs(repo, execSync = spawnSync) {
   if (!REPO_RE.test(repo)) throw new Error('invalid repo name');
-  const res = spawnSync(
+  const fullFields = 'number,labels,mergeStateStatus,reviewDecision,headRefOid,updatedAt,statusCheckRollup,comments';
+  const baseFields = 'number,labels,mergeStateStatus,updatedAt';
+  let res = execSync(
     'gh',
-    ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--search', 'draft:false', '--limit', '200', '--json', 'number,labels,mergeStateStatus,updatedAt'],
+    ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--search', 'draft:false', '--limit', '200', '--json', fullFields],
+    { encoding: 'utf8', shell: false, timeout: 30_000 },
+  );
+  if (res.status !== 0 && /unknown json field/i.test(res.stderr || '')) {
+    res = execSync(
+      'gh',
+      ['pr', 'list', `--repo=${repo}`, '--state', 'open', '--search', 'draft:false', '--limit', '200', '--json', baseFields],
+      { encoding: 'utf8', shell: false, timeout: 30_000 },
+    );
+  }
+  if (res.status !== 0) {
+    throw new Error((res.stderr || res.error?.message || 'gh pr list failed').trim().split(/\r?\n/)[0]);
+  }
+  return JSON.parse(res.stdout || '[]');
+}
+
+export function defaultQueryOpenIssues(repo, execSync = spawnSync) {
+  if (!REPO_RE.test(repo)) throw new Error('invalid repo name');
+  const res = execSync(
+    'gh',
+    ['issue', 'list', `--repo=${repo}`, '--state', 'open', '--limit', '100', '--json', 'number,state,labels,updatedAt,comments'],
     { encoding: 'utf8', shell: false, timeout: 30_000 },
   );
   if (res.status !== 0) {
-    throw new Error((res.stderr || res.error?.message || 'gh pr list failed').trim().split(/\r?\n/)[0]);
+    throw new Error((res.stderr || res.error?.message || 'gh issue list failed').trim().split(/\r?\n/)[0]);
   }
   return JSON.parse(res.stdout || '[]');
 }
@@ -580,7 +734,19 @@ function defaultSendMessage(conversationId, message, resolvedCmd = resolveAgentA
   }
 }
 
-function selectPoInspection(brainDir, po, checkInText, nowMs) {
+export function sendMacNotification(title, message, execSync = spawnSync) {
+  try {
+    const safeTitle = String(title || 'CC-PO Gatekeeper').replace(/["\\\r\n]+/g, ' ').trim();
+    const safeMsg = String(message || '').replace(/["\\\r\n]+/g, ' ').trim();
+    const script = `display notification "${safeMsg}" with title "${safeTitle}"`;
+    const res = execSync('osascript', ['-e', script], { encoding: 'utf8', shell: false, timeout: 5_000 });
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function selectPoInspection(brainDir, po, checkInText, nowMs, inspectOpts) {
   const candidates = [];
   const headerId = resolvePoConversationId({ conversationId: '' }, checkInText);
   const configId = typeof po?.conversationId === 'string' && UUID_RE.test(po.conversationId.trim())
@@ -591,7 +757,7 @@ function selectPoInspection(brainDir, po, checkInText, nowMs) {
 
   let best = null;
   for (const id of candidates) {
-    const info = inspectConversation(brainDir, id, nowMs);
+    const info = inspectConversation(brainDir, id, nowMs, inspectOpts);
     if (!info) continue;
     if (!best || info.lastActivityMs > best.lastActivityMs) {
       best = info;
@@ -615,134 +781,283 @@ export function runGatekeeper(configPath, deps = {}) {
   const brainDir = resolveBrainDir({ config, deps, env, home });
   const scriptPath = deps.scriptPath ?? fileURLToPath(import.meta.url);
   const rawEnvProfile = typeof env.ANTIGRAVITY_PROFILE === 'string' ? env.ANTIGRAVITY_PROFILE.trim() : '';
-  const profile = rawEnvProfile || inferProfileName(env.ANTIGRAVITY_APP_DATA_DIR, config.appDataDir, brainDir, scriptPath);
+  const rawExecDataDir = typeof env.ANTIGRAVITY_EXECUTABLE_DATA_DIR === 'string'
+    ? env.ANTIGRAVITY_EXECUTABLE_DATA_DIR.trim()
+    : '';
+  const profile = rawEnvProfile || inferProfileName(env.ANTIGRAVITY_APP_DATA_DIR, rawExecDataDir, config.appDataDir, brainDir, scriptPath);
   const agentApi = deps.agentApi ?? resolveAgentApiCommand(env, platform, home, {
     appDataDir: config.appDataDir,
+    execDataDir: rawExecDataDir,
     brainDir,
     scriptPath,
     profile,
   });
 
-  const excludedPoIds = new Set();
-  const rawEntries = [];
-  for (const po of config.pos ?? []) {
-    const title = cleanCellTitle(po?.title);
-    if (!title) continue;
-    if (typeof po.conversationId === 'string' && UUID_RE.test(po.conversationId.trim())) {
-      excludedPoIds.add(po.conversationId.trim().toLowerCase());
-    }
-    const checkInPath = po.checkInFile ? expandHome(po.checkInFile, home) : '';
-    const checkInText = checkInPath && existsSync(checkInPath) ? readFileSync(checkInPath, 'utf8') : '';
-    const poInfo = selectPoInspection(brainDir, po, checkInText, nowMs);
-    if (poInfo) excludedPoIds.add(poInfo.conversationId);
-    rawEntries.push({ po, title, checkInText, poInfo });
-  }
-
-  const poInspections = new Map();
-  for (const { po, title, checkInText, poInfo } of rawEntries) {
-    if (!poInfo) continue;
-    const activeIds = extractActiveCheckInIds(checkInText, excludedPoIds);
-    for (const extraId of po.activeSubagents ?? []) {
-      if (typeof extraId === 'string' && UUID_RE.test(extraId)) {
-        const lower = extraId.toLowerCase();
-        if (!excludedPoIds.has(lower)) activeIds.add(lower);
-      }
-    }
-
-    const subMap = new Map();
-    for (const spawned of poInfo.spawnedSubagents) {
-      if (excludedPoIds.has(spawned.conversationId)) continue;
-      const subInfo = inspectConversation(brainDir, spawned.conversationId, nowMs);
-      if (!subInfo) continue;
-      const inCheckIn = activeIds.has(spawned.conversationId)
-        || [...activeIds].some((id) => id.startsWith(spawned.conversationId.slice(0, 8)));
-      const newerThanPo = subInfo.lastActivityMs > poInfo.lastActivityMs;
-      if (inCheckIn || newerThanPo) {
-        subMap.set(spawned.conversationId, { ...subInfo, role: spawned.role });
-      }
-    }
-    for (const activeId of activeIds) {
-      if (subMap.has(activeId)) continue;
-      const subInfo = inspectConversation(brainDir, activeId, nowMs);
-      if (subInfo) subMap.set(activeId, { ...subInfo, role: `session ${activeId.slice(0, 8)}` });
-    }
-
-    poInspections.set(title, { po: poInfo, subSessions: [...subMap.values()] });
-  }
-
-  let restartTimes = { bootTime: '', appStartTime: '' };
-  try {
-    restartTimes = (deps.getRestartTimes ?? (() => defaultRestartTimes(profile)))();
-  } catch (err) {
-    process.stderr.write(`gatekeeper restart check error: ${err.message}\n`);
-  }
-
-  let openPrs = null;
-  try {
-    openPrs = (deps.queryOpenPrs ?? defaultQueryOpenPrs)(config.repo);
-  } catch (err) {
-    process.stderr.write(`gatekeeper gh pr list error: ${err.message}\n`);
-  }
-
-  const { actions } = evaluateGatekeeper({
-    config,
-    poInspections,
-    restartTimes,
-    openPrs,
-    nowMs,
-  });
-
-  const send = deps.sendMessage ?? ((id, msg) => defaultSendMessage(id, msg, agentApi));
-  const summaryParts = [];
-  const sendFailedTitles = new Set();
-  for (const action of actions) {
-    if (!action.message) {
-      summaryParts.push(`${action.title}: ${action.skipped}`);
-      continue;
-    }
-    const tags = action.reasons.join(' + ');
-    if (dryRun) {
-      summaryParts.push(`${action.title}: would-wake (${tags})`);
-      continue;
-    }
-    try {
-      send(action.conversationId, action.message);
-      summaryParts.push(`${action.title}: woke (${tags})`);
-    } catch (err) {
-      process.stderr.write(`gatekeeper send error (${action.title}): ${err.message}\n`);
-      sendFailedTitles.add(action.title);
-      summaryParts.push(`${action.title}: send-failed`);
-    }
-  }
-
-  const summary = `gatekeeper (${config.repo}): ${summaryParts.join(', ') || 'no POs'}`;
-  const status = {
-    repo: config.repo,
-    checkedAt: new Date(nowMs).toISOString(),
-    dryRun,
-    profile: profile || null,
+  // Profile Affinity Guard: refuse cross-profile runs (e.g. acc2 sidecar targeting acc3 brainDir).
+  const affinity = checkProfileAffinity({
+    envProfile: rawEnvProfile,
+    appDataDir: env.ANTIGRAVITY_APP_DATA_DIR || '',
+    execDataDir: rawExecDataDir,
     brainDir,
-    agentApi: { file: agentApi.file, prefixArgs: agentApi.prefixArgs },
-    restartTimes,
-    actions: actions.map((action) => ({
-      title: action.title,
-      conversationId: action.conversationId || null,
-      skipped: action.skipped || null,
-      reasons: action.reasons || [],
-      woke: Boolean(action.message && !dryRun && !sendFailedTitles.has(action.title)),
-      wouldWake: Boolean(action.message && dryRun),
-      sendFailed: sendFailedTitles.has(action.title),
-    })),
-    summary,
-  };
-
-  if (deps.stateFile && !dryRun) {
-    const outPath = expandHome(deps.stateFile, home);
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, `${JSON.stringify(status, null, 2)}\n`, 'utf8');
+    scriptPath,
+  });
+  if (!affinity.ok) {
+    const summary = `gatekeeper (${config.repo}): skipped: profile-mismatch (${affinity.reason})`;
+    const status = {
+      repo: config.repo,
+      checkedAt: new Date(nowMs).toISOString(),
+      dryRun,
+      profile: profile || null,
+      brainDir,
+      agentApi: { file: agentApi.file, prefixArgs: agentApi.prefixArgs },
+      skipped: 'profile-mismatch',
+      profileAffinity: affinity,
+      restartTimes: { bootTime: '', appStartTime: '' },
+      actions: [],
+      summary,
+    };
+    return { summary, actions: [], status };
   }
 
-  return { summary, actions, status };
+  const lockDir = deps.lockDir !== undefined
+    ? deps.lockDir
+    : (config.lockDir !== undefined ? config.lockDir : (deps.sendMessage ? '' : join(home, '.claude', 'po-state', 'locks')));
+  const lockTtlMs = Number.isFinite(Number(config.lockTtlMs)) && Number(config.lockTtlMs) > 0
+    ? Number(config.lockTtlMs)
+    : DEFAULT_LOCK_TTL_MS;
+
+  // Repo-level lock serializes the full readState -> eval -> send -> writeState cycle
+  // so overlapping cron runs never clobber state.json or double-wake POs.
+  const repoLock = (!dryRun && lockDir)
+    ? acquirePoLock(lockDir, `repo-${config.repo}`, lockTtlMs, nowMs)
+    : { acquired: true, lockPath: null, token: null, disabled: true };
+  if (!repoLock.acquired) {
+    const summary = `gatekeeper (${config.repo}): skipped: locked`;
+    const status = {
+      repo: config.repo,
+      checkedAt: new Date(nowMs).toISOString(),
+      dryRun,
+      profile: profile || null,
+      brainDir,
+      agentApi: { file: agentApi.file, prefixArgs: agentApi.prefixArgs },
+      skipped: 'locked',
+      profileAffinity: affinity,
+      restartTimes: { bootTime: '', appStartTime: '' },
+      actions: [],
+      summary,
+    };
+    return { summary, actions: [], status };
+  }
+
+  try {
+    // Optional persistent state: explicit --state-file / deps.stateFile, or ANTIGRAVITY_EXECUTABLE_DATA_DIR/state.json.
+    const execDataDir = rawExecDataDir ? expandHome(rawExecDataDir, home) : '';
+    const effectiveStateFile = deps.stateFile
+      ? expandHome(deps.stateFile, home)
+      : (execDataDir ? join(execDataDir, 'state.json') : null);
+    const prevState = effectiveStateFile ? readJsonState(effectiveStateFile) : null;
+    const prevPoStates = prevState?.poStates && typeof prevState.poStates === 'object' ? prevState.poStates : {};
+
+    const debounceMs = Number.isFinite(Number(config.debounceSeconds)) && Number(config.debounceSeconds) > 0
+      ? Number(config.debounceSeconds) * 1000
+      : RUNNING_MTIME_WINDOW_MS;
+    const inspectOpts = {
+      debounceMs,
+      turnStatusDir: deps.turnStatusDir,
+      env,
+      home,
+      readTurnStatus: deps.readTurnStatus,
+    };
+
+    const excludedPoIds = new Set();
+    const rawEntries = [];
+    for (const po of config.pos ?? []) {
+      const title = cleanCellTitle(po?.title);
+      if (!title) continue;
+      if (typeof po.conversationId === 'string' && UUID_RE.test(po.conversationId.trim())) {
+        excludedPoIds.add(po.conversationId.trim().toLowerCase());
+      }
+      const checkInPath = po.checkInFile ? expandHome(po.checkInFile, home) : '';
+      const checkInText = checkInPath && existsSync(checkInPath) ? readFileSync(checkInPath, 'utf8') : '';
+      const poInfo = selectPoInspection(brainDir, po, checkInText, nowMs, inspectOpts);
+      if (poInfo) excludedPoIds.add(poInfo.conversationId);
+      rawEntries.push({ po, title, checkInText, poInfo });
+    }
+
+    const poInspections = new Map();
+    for (const { po, title, checkInText, poInfo } of rawEntries) {
+      if (!poInfo) continue;
+      const activeIds = extractActiveCheckInIds(checkInText, excludedPoIds);
+      for (const extraId of po.activeSubagents ?? []) {
+        if (typeof extraId === 'string' && UUID_RE.test(extraId)) {
+          const lower = extraId.toLowerCase();
+          if (!excludedPoIds.has(lower)) activeIds.add(lower);
+        }
+      }
+
+      const subMap = new Map();
+      for (const spawned of poInfo.spawnedSubagents) {
+        if (excludedPoIds.has(spawned.conversationId)) continue;
+        const subInfo = inspectConversation(brainDir, spawned.conversationId, nowMs, inspectOpts);
+        if (!subInfo) continue;
+        const inCheckIn = activeIds.has(spawned.conversationId)
+          || [...activeIds].some((id) => id.startsWith(spawned.conversationId.slice(0, 8)));
+        const newerThanPo = subInfo.lastActivityMs > poInfo.lastActivityMs;
+        if (inCheckIn || newerThanPo) {
+          subMap.set(spawned.conversationId, { ...subInfo, role: spawned.role });
+        }
+      }
+      for (const activeId of activeIds) {
+        if (subMap.has(activeId)) continue;
+        const subInfo = inspectConversation(brainDir, activeId, nowMs, inspectOpts);
+        if (subInfo) subMap.set(activeId, { ...subInfo, role: `session ${activeId.slice(0, 8)}` });
+      }
+
+      poInspections.set(title, { po: poInfo, subSessions: [...subMap.values()] });
+    }
+
+    let restartTimes = { bootTime: '', appStartTime: '' };
+    try {
+      restartTimes = (deps.getRestartTimes ?? (() => defaultRestartTimes(profile)))();
+    } catch (err) {
+      process.stderr.write(`gatekeeper restart check error: ${err.message}\n`);
+    }
+
+    let openPrs = null;
+    try {
+      openPrs = (deps.queryOpenPrs ?? defaultQueryOpenPrs)(config.repo);
+    } catch (err) {
+      process.stderr.write(`gatekeeper gh pr list error: ${err.message}\n`);
+    }
+
+    let openIssues = null;
+    const shouldQueryIssues = Boolean(deps.queryOpenIssues) || (!deps.queryOpenPrs && isMultiSignalMode(config, { legacyMode: deps.legacyMode }));
+    if (shouldQueryIssues) {
+      try {
+        openIssues = (deps.queryOpenIssues ?? defaultQueryOpenIssues)(config.repo);
+      } catch (err) {
+        process.stderr.write(`gatekeeper gh issue list error: ${err.message}\n`);
+      }
+    }
+
+    const { actions, nextPoStates } = evaluateGatekeeper({
+      config,
+      poInspections,
+      restartTimes,
+      openPrs,
+      openIssues,
+      prevState,
+      nowMs,
+      legacyMode: Boolean(deps.legacyMode),
+    });
+
+    const send = deps.sendMessage ?? ((id, msg) => defaultSendMessage(id, msg, agentApi));
+    const notify = deps.notify ?? ((t, m) => (platform === 'darwin' && !deps.sendMessage ? sendMacNotification(t, m) : false));
+
+    const summaryParts = [];
+    const sendFailedTitles = new Set();
+    const lockedTitles = new Set();
+    const committedPoStates = { ...prevPoStates };
+
+    for (const action of actions) {
+      const stateKey = action.conversationId || action.title;
+      const prevForPo = prevPoStates[stateKey] || prevPoStates[action.title] || {};
+      const candidateForPo = nextPoStates[stateKey] || prevForPo;
+
+      // Optional macOS alert when PO has >= 2 consecutive unanswered wakes (e.g., quota exhausted).
+      if (action.shouldAlertBackoff && !dryRun && config.notifyOnBackoff !== false) {
+        const lastAlertMs = typeof prevForPo.lastBackoffAlertAtMs === 'number' ? prevForPo.lastBackoffAlertAtMs : 0;
+        if (lastAlertMs === 0 || (nowMs - lastAlertMs) >= BACKOFF_ALERT_COOLDOWN_MS) {
+          const sentAlert = notify(
+            `CC-PO Gatekeeper (${config.repo})`,
+            `${action.title} has ${action.consecutiveUnansweredWakes} unanswered wakes (possible quota/error).`,
+          );
+          if (sentAlert) {
+            candidateForPo.lastBackoffAlertAtMs = nowMs;
+            prevForPo.lastBackoffAlertAtMs = nowMs;
+          }
+        }
+      }
+
+      if (!action.message) {
+        summaryParts.push(`${action.title}: ${action.skipped}`);
+        if (action.skipped === 'no-reason') {
+          committedPoStates[stateKey] = candidateForPo;
+        } else {
+          committedPoStates[stateKey] = prevForPo;
+        }
+        continue;
+      }
+
+      const tags = action.reasons.join(' + ');
+      if (dryRun) {
+        summaryParts.push(`${action.title}: would-wake (${tags})`);
+        continue;
+      }
+
+      const lockKey = `${config.repo}-${action.conversationId || action.title}`;
+      const lock = acquirePoLock(lockDir, lockKey, lockTtlMs, nowMs);
+      if (!lock.acquired) {
+        lockedTitles.add(action.title);
+        action.skipped = 'locked';
+        committedPoStates[stateKey] = prevForPo;
+        summaryParts.push(`${action.title}: locked`);
+        continue;
+      }
+
+      try {
+        send(action.conversationId, action.message);
+        committedPoStates[stateKey] = {
+          ...candidateForPo,
+          lastSentAtMs: nowMs,
+          lastSentAt: new Date(nowMs).toISOString(),
+        };
+        summaryParts.push(`${action.title}: woke (${tags})`);
+      } catch (err) {
+        process.stderr.write(`gatekeeper send error (${action.title}): ${err.message}\n`);
+        sendFailedTitles.add(action.title);
+        committedPoStates[stateKey] = prevForPo;
+        summaryParts.push(`${action.title}: send-failed`);
+      } finally {
+        releasePoLock(lock);
+      }
+    }
+
+    const summary = `gatekeeper (${config.repo}): ${summaryParts.join(', ') || 'no POs'}`;
+    const status = {
+      repo: config.repo,
+      checkedAt: new Date(nowMs).toISOString(),
+      dryRun,
+      profile: profile || null,
+      brainDir,
+      agentApi: { file: agentApi.file, prefixArgs: agentApi.prefixArgs },
+      profileAffinity: affinity,
+      restartTimes,
+      actions: actions.map((action) => ({
+        title: action.title,
+        conversationId: action.conversationId || null,
+        skipped: action.skipped || null,
+        reasons: action.reasons || [],
+        woke: Boolean(action.message && !dryRun && !sendFailedTitles.has(action.title) && !lockedTitles.has(action.title)),
+        wouldWake: Boolean(action.message && dryRun),
+        sendFailed: sendFailedTitles.has(action.title),
+        locked: lockedTitles.has(action.title),
+        consecutiveUnansweredWakes: action.consecutiveUnansweredWakes ?? 0,
+      })),
+      summary,
+    };
+
+    if (effectiveStateFile && !dryRun) {
+      writeJsonStateAtomic(effectiveStateFile, {
+        ...status,
+        poStates: committedPoStates,
+      });
+    }
+
+    return { summary, actions, status };
+  } finally {
+    releasePoLock(repoLock);
+  }
 }
 
 export function parseCliArgs(argv) {
