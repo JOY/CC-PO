@@ -18,7 +18,7 @@ export const ROLE_DEFAULTS = Object.freeze({
   po: Object.freeze({
     series: 'sonnet',
     effort: 'high',
-    antigravity: 'inherit (Orchestrator (Carbon) or Gemini 4 Carbon)',
+    antigravity: 'inherit (Orchestrator (Neon), Orchestrator (Carbon), Gemini 4 Neon, or Gemini 4 Carbon)',
     reason: 'PO triage and coordination need strong reasoning without flagship-only cost',
   }),
   worker: Object.freeze({
@@ -48,7 +48,7 @@ export const ROLE_DEFAULTS = Object.freeze({
   'security-reviewer': Object.freeze({
     series: 'opus',
     effort: 'high',
-    antigravity: 'Claude Opus, Gemini 4 Carbon, or Orchestrator (Carbon) research subagent',
+    antigravity: 'Claude Opus, Gemini 4 Neon (High/XHigh), Gemini 4 Carbon, or Orchestrator (Neon/Carbon) research subagent',
     reason: 'Auth, billing, RLS, secrets, and Production gates require flagship tier',
   }),
   explorer: Object.freeze({
@@ -67,6 +67,11 @@ const ANTIGRAVITY_MODELS = new Set([
   'pro',
   'gemini-pro-orchestrator',
   'gemini-pro-orchestrator-argon',
+  'gemini-pro-orchestrator-neon',
+  'gemini-4-neon-medium',
+  'gemini-4-neon-high',
+  'gemini-4-neon-xhigh',
+  'gemini-4-hydrogen-high',
 ]);
 
 // Matches pinned vendor snapshots such as claude-haiku-5-5, claude-sonnet-4-5,
@@ -339,12 +344,18 @@ export function adviseModels({
   const swarmHints = {};
   if (availableSwarm.length > 0) {
     swarmHints.available = availableSwarm;
-    const findMatch = (patterns) => availableSwarm.find((m) => patterns.some((p) => p.test(m))) || null;
+    const findMatch = (patterns) => {
+      for (const pattern of patterns) {
+        const hit = availableSwarm.find((m) => pattern.test(m));
+        if (hit) return hit;
+      }
+      return null;
+    };
     swarmHints.byRole = {
-      po: findMatch([/orchestrator/i, /carbon/i, /sonnet/i, /\bpro\b/i]) || 'inherit',
+      po: findMatch([/orchestrator.*neon/i, /orchestrator/i, /neon-high/i, /carbon/i, /sonnet/i, /\bpro\b/i]) || 'inherit',
       explorer: findMatch([/flash_lite/i, /\bflash\b/i, /haiku/i]) || 'flash_lite',
-      reviewer: findMatch([/research/i, /sonnet/i, /carbon/i, /\bpro\b/i]) || 'inherit',
-      'security-reviewer': findMatch([/opus/i, /carbon/i, /orchestrator(?!.*argon)/i]) || 'inherit',
+      reviewer: findMatch([/research/i, /neon-high/i, /sonnet/i, /carbon/i, /\bpro\b/i]) || 'inherit',
+      'security-reviewer': findMatch([/opus/i, /neon-high/i, /neon-xhigh/i, /carbon/i, /orchestrator(?!.*argon)/i]) || 'inherit',
     };
   }
 
