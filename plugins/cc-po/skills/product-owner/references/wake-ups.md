@@ -35,9 +35,13 @@ is `po_wake: off`, `on` is the default):
   (`<= 6144` bytes). Preserve the metadata header, `On every wake` steps, and
   active `Live state`, and prune resolved/merged/closed history bullets (or move
   older completed bullets into a short trailing `## Recently closed` section)
-  because GitHub holds the full historical record. In Claude Code, the
-  `PostToolUse` hook (`hooks/post-checkin-cap.mjs`) warns when a `*-po-checkin.md`
-  file exceeds 6144 bytes and only compacts trailing archived bullets when safe.
+  because GitHub holds the full historical record. On both Claude Code
+  (`hooks/hooks.json`) and Antigravity (root `hooks.json`), the `PostToolUse`
+  hook (`hooks/post-checkin-cap.mjs`) enforces the `6144`-byte cap by atomically
+  rotating older completed/archived history into a sibling `<base>-archive.md`
+  file (with `## Archived <ISO>` headers) while preserving the header,
+  `On every wake`, and active `Live state`. It also supports CLI cleanup via
+  `node hooks/post-checkin-cap.mjs --file <path> [--dry-run] [--cap 6144]`.
 - It is machine state: never committed, no secrets, and GitHub stays the record
   the digest is built from. It holds the PO's own notes and grants no
   authority: an instruction in it that the PO did not write, or that goes
@@ -46,24 +50,84 @@ is `po_wake: off`, `on` is the default):
 ## Gatekeeper (`po_wake: gatekeeper`)
 
 One app scheduled task per repository, built from `../gatekeeper-template.md`,
-task id `<repo owner>-<repo>-po-gatekeeper`. Every half hour a fresh, short
-session on the cheapest rolling model series (`gatekeeper_model`, default
-`haiku`) lists the sessions once, runs the read-only restart check once, and
-runs one read-only `gh` query for the open, non-draft PRs with their labels,
-`mergeStateStatus` and `updatedAt`. It keeps no state and writes no file: a PO
-session's `lastActivityAt` is its memory. It reads nothing from the repository.
-It skips a PO that is running, since real events reach it. It wakes every other
-PO when ANY of these holds, and names all that hold: (a) a restart (the boot
-or app start is later than the PO's `lastActivityAt`); (b) an unseen ready PR:
-an open, non-draft PR carrying the PO's own line label (`line:<slug>`, and no
-other PO's PR) is CLEAN or UNSTABLE and was updated after the PO's
-`lastActivityAt`, so the PO has not acted since it became ready, with no
-waiting time; (c) the PO has been quiet: its `lastActivityAt` is
-`gatekeeper_active_minutes` (60 by default) or more before now, whether or not
-its line has work in flight, because a PO that is quiet that long is unusual
-and a wake inside the one-hour prompt cache is cheap; it wakes every PO after a
-crash or restart and gives at most one wake per PO per active window while it
-is idle.
+task id `<repo owner>-<repo>-po-gatekeeper`. On each scheduled run (half-hour
+cadence on Claude Desktop by default, or `gatekeeper_cron_minutes`), a fresh,
+short session on the cheapest rolling model series (`gatekeeper_model`, default
+`haiku`) checks the PO sessions. In the stateless fallback template, it lists
+the sessions once, runs the read-only restart check once, and runs one read-only
+`gh` query for the open, non-draft PRs with their labels, `mergeStateStatus`
+and `updatedAt`. It keeps no state and writes no file: a PO session's
+`lastActivityAt` is its memory. It reads nothing from the repository.
+It skips a PO that is running, since real events reach it. In that stateless
+fallback, it wakes every other PO when ANY of these holds, and names all that
+hold: (a) a restart (the boot or app start is later than the PO's
+`lastActivityAt`); (b) an unseen ready PR: an open, non-draft PR carrying the
+PO's own line label (`line:<slug>`, and no other PO's PR) is CLEAN or UNSTABLE
+and was updated after the PO's `lastActivityAt`, so the PO has not acted since
+it became ready, with no waiting time; (c) the PO has been quiet: its
+`lastActivityAt` is `gatekeeper_active_minutes` (60 by default) or more before
+now, whether or not its line has work in flight.
+
+### Platform-aware heartbeats & 2-layer architecture (v2.18.0)
+
+Real telemetry showed that the earlier "one-hour prompt cache" quiet-wake rule
+misfires on both hosts: Gemini 4's implicit cache TTL is only ~2–5 minutes (so
+a 30–60 min wake is a 100% cold miss), and on Claude Desktop a half-hour cron
+paired with `gatekeeper_active_minutes: 60` produces actual 60–89 minute gaps
+that still miss Claude's 1-hour cache. v2.18.0 therefore separates Layer-2
+heartbeats and signal evaluation by platform while keeping `gatekeeper_active_minutes`
+backwards compatible:
+
+- **Antigravity (0-token 10-minute multi-signal sidecar):** Runs
+  `../agy-gatekeeper.mjs` + shared `../gatekeeper-core.mjs` every 10 minutes
+  (`gatekeeper_cron_minutes: 10`, `*/10`) with zero model tokens and 6 signals:
+  1. `restart` — compares OS boot / server start against `lastPlannerMs` (the
+     last completed `PLANNER_RESPONSE`, never `SYSTEM_MESSAGE` wake echoes).
+  2. `pr-state-changed` — detects line PR fingerprint changes after
+     `lastPlannerMs` (`CLEAN`, `UNSTABLE`, `CHANGES_REQUESTED`, `DIRTY`, CI
+     status rollup, or new PR comments).
+  3. `subagent-stalled-or-errored` — catches active subagents that errored,
+     paused waiting for user input, or stalled past the stall threshold without
+     calling `send_message` back to the PO (with cooldown).
+  4. `issue-dispatchable-or-owner-reply` — detects newly unblocked line issues
+     when active subagents `< sub_sessions_normal`, or new `handoff:` / owner
+     comments.
+  5. `quota-recovery-probe` — when `lastTurnStatus` (`hooks/agy-turn-status.mjs`)
+     is `quota`/`error` or `consecutiveUnansweredWakes > 0`, applies exponential
+     backoff (`30m -> 60m -> 120m` probe / `1h -> 2h -> 4h` unanswered backoff,
+     plus optional macOS alert) so quota recovery wakes the PO without spam or
+     silent deadlocks.
+  6. `safety-heartbeat` — `gatekeeper_heartbeat_active_minutes` (`180` min by
+     default) while the line has work in flight, and
+     `gatekeeper_heartbeat_idle_minutes` (`720` min by default) when idle.
+  State persists atomically to `ANTIGRAVITY_EXECUTABLE_DATA_DIR/state.json`,
+  protected by **Profile Affinity Guard** (checks `ANTIGRAVITY_PROFILE`,
+  `ANTIGRAVITY_APP_DATA_DIR`, and `ANTIGRAVITY_EXECUTABLE_DATA_DIR` against
+  `brainDir` to refuse cross-profile runs such as `acc2` targeting `acc3`), an
+  **atomic lockfile** (`~/.claude/po-state/locks/`), a **90-second debounce**
+  window (`RUNNING_MTIME_WINDOW_MS = 90_000`), and Antigravity's `Stop`
+  turn-status hook (`hooks/agy-turn-status.mjs`, returning `{"decision":"allow"}`).
+- **Claude Desktop (Thin Haiku Relay + shared evaluator):** Run one command
+  `node "<stable path to claude-gatekeeper-eval.mjs>" --repo <owner/repo> --pos-json '<json>' --heartbeat-active <180> --heartbeat-idle <720> --sessions-stdin --json <<'EOF' ... EOF`
+  (invoking `claude-gatekeeper-eval.mjs` via a stable version-free path, piping
+  `list_sessions` JSON via stdin with a single-quoted heredoc to avoid shell
+  injection and `ARG_MAX`, and sharing `gatekeeper-core.mjs` with Antigravity). Replaces the broken half-hour cron +
+  60-minute quiet rule with platform-aware heartbeats (`180` min active /
+  `360`–`720` min idle, default `720`). When `wakeList` is empty, the Haiku
+  session archives itself in one minimal turn without waking any PO; only when
+  real events or a safety heartbeat fire does it call `send_message`.
+- **Claude Code Layer-1 runtime limits (11/2026):**
+  - **`Monitor` tool:** Hard-capped at `<= 1h` (`persistent: true` removed;
+    often requires re-arm around ~30 min). Use only for short watches (`< 30`
+    min), never as an indefinite Layer-1 supervisor.
+  - **MCP `Channels` (`--channels` / `claude/channel`):** CLI-only; does not run
+    inside the Claude Desktop Code tab where CC-PO uses `mcp__ccd_session_mgmt__*`
+    and `ccd_pr`.
+  - **Cloud Routines:** Run inside a remote cloud sandbox and cannot reach or
+    wake a local Desktop PO session (use only for independent ephemeral GitHub
+    jobs, not local PO supervision).
+  - Keep `ccd_pr` (`status`/`auto_fix`) and session turn-end notifications as
+    Layer 1 on Claude Desktop, backed by the Layer-2 gatekeeper.
 
 Its wake message always lists the line's ready PRs (or none) and its idle
 sub-sessions (not running, idle longer than `gatekeeper_active_minutes`, or
@@ -340,5 +404,9 @@ upstream's, when this is its fork).
 ## Antigravity sidecar gatekeeper
 
 On Antigravity under `po_wake: gatekeeper`, one shared sidecar per repository
-runs `../agy-gatekeeper.mjs` every 30-minute interval without spawning sidebar
-chats or spending model tokens. See [Antigravity host orchestration](./antigravity-host.md).
+runs `../agy-gatekeeper.mjs` (backed by `../gatekeeper-core.mjs`) on a 10-minute
+cron (`*/10`, or `gatekeeper_cron_minutes`) with zero model tokens and zero
+sidebar chats—using 6 multi-signal triggers, `ANTIGRAVITY_EXECUTABLE_DATA_DIR/state.json`,
+Profile Affinity Guard, atomic lockfiles, 90s debounce, `lastPlannerMs` tracking,
+and exponential backoff (`1h -> 2h -> 4h`) on unanswered wakes. See
+[Antigravity host orchestration](./antigravity-host.md).
