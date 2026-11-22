@@ -527,6 +527,11 @@ export function evaluateSignals({
     : (Number.isFinite(Number(config?.debounceSeconds)) ? Number(config.debounceSeconds) * 1000 : DEFAULT_DEBOUNCE_MS);
 
   const preservedState = prevPoState ? { ...prevPoState } : {};
+  const prevSentAtMs = typeof prevPoState?.lastSentAtMs === 'number' ? prevPoState.lastSentAtMs : 0;
+  const poAnsweredSinceLastSend = prevSentAtMs > 0 && lastPlannerMs > prevSentAtMs;
+  if (poAnsweredSinceLastSend) {
+    preservedState.unansweredSendsSincePlanner = 0;
+  }
 
   if (isSessionLiveRunning(session, latestRestartMs, nowMs)) {
     return {
@@ -546,7 +551,6 @@ export function evaluateSignals({
     };
   }
 
-  const prevSentAtMs = typeof prevPoState?.lastSentAtMs === 'number' ? prevPoState.lastSentAtMs : 0;
   if (prevSentAtMs > 0 && prevSentAtMs >= lastPlannerMs && (nowMs - prevSentAtMs) >= 0 && (nowMs - prevSentAtMs) < debounceMs) {
     return {
       shouldWake: false,
@@ -565,7 +569,17 @@ export function evaluateSignals({
     };
   }
 
-  const consecutiveUnanswered = Math.max(0, Number(session.consecutiveUnansweredWakes ?? 0) || 0);
+  const transcriptUnanswered = Math.max(0, Number(session.consecutiveUnansweredWakes ?? 0) || 0);
+  // Also count wakes recorded in state.json after lastPlannerMs, even when Antigravity queues
+  // agentapi send-message in memory without immediately writing a SYSTEM_MESSAGE to transcript.jsonl.
+  const rawStateUnanswered = poAnsweredSinceLastSend
+    ? 0
+    : Math.max(0, Number(prevPoState?.unansweredSendsSincePlanner ?? 0) || 0);
+  const stateUnanswered = rawStateUnanswered > 0
+    ? rawStateUnanswered
+    : (prevSentAtMs > 0 && prevSentAtMs > lastPlannerMs ? 1 : 0);
+  preservedState.unansweredSendsSincePlanner = stateUnanswered;
+  const consecutiveUnanswered = Math.max(transcriptUnanswered, stateUnanswered);
   const lastTurnStatus = session.lastTurnStatus ?? session.lastErrorType ?? null;
   const poIsQuotaOrError = lastTurnStatus === 'quota' || lastTurnStatus === 'error';
   const freshQuotaSubs = (subSessions ?? []).filter((s) => {
@@ -904,7 +918,9 @@ export function evaluateSignals({
   }
 
   // Signal 6: safety-heartbeat (replaces legacy quiet in multi-signal mode).
+  // Gate on max(lastPlannerMs, prevSentAtMs) so a queued wake can never re-fire safety-heartbeat every 10m.
   const idleMs = nowMs - lastPlannerMs;
+  const heartbeatIdleMs = nowMs - Math.max(lastPlannerMs, prevSentAtMs);
   if (!useMultiSignal) {
     if (idleMs >= activeWindowMs) {
       reasons.push(`quiet for ${Math.floor(idleMs / 60_000)} minutes`);
@@ -921,7 +937,7 @@ export function evaluateSignals({
       DEFAULT_HEARTBEAT_IDLE_MINUTES,
     );
     const thresholdMin = hasWorkInFlight ? hbActiveMin : hbIdleMin;
-    if (idleMs >= thresholdMin * 60_000) {
+    if (heartbeatIdleMs >= thresholdMin * 60_000) {
       reasons.push(`safety-heartbeat (${hasWorkInFlight ? 'active' : 'idle'}, ${Math.floor(idleMs / 60_000)}m)`);
       signals.safetyHeartbeat = {
         mode: hasWorkInFlight ? 'active' : 'idle',

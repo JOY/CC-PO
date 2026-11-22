@@ -1040,10 +1040,12 @@ export function runGatekeeper(configPath, deps = {}) {
 
       try {
         send(action.conversationId, action.message);
+        const priorUnansweredSends = Math.max(0, Number(candidateForPo.unansweredSendsSincePlanner ?? 0) || 0);
         committedPoStates[stateKey] = {
           ...candidateForPo,
           lastSentAtMs: nowMs,
           lastSentAt: new Date(nowMs).toISOString(),
+          unansweredSendsSincePlanner: priorUnansweredSends + 1,
           consecutiveSendFailures: 0,
           lastSendFailedAtMs: null,
         };

@@ -2385,7 +2385,12 @@ test('2.18.0 agy-gatekeeper: lastPlannerMs fix, 90s debounce, ANTIGRAVITY_EXECUT
     assert.match(sent1[0].msg, /reasons: pr-state-changed/);
     assert.equal(wakeRes.status.actions[0].woke, true);
 
-    // Next pass 10m later with unchanged PR #77 is deduped via persisted state.json.
+    // PO answers the 04:31Z wake at 04:32Z; next pass 10m later with unchanged PR #77 is deduped via persisted state.json.
+    writeTranscript(poId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T04:00:00Z' },
+      { step_index: 2, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-21T04:31:00Z', content: 'Gatekeeper wake at 2026-11-21T04:31:00Z (reasons: pr-state-changed).' },
+      { step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T04:32:00Z' },
+    ]);
     const sent2 = [];
     const dedupeRes = runGatekeeper(cfgPath, {
       env: { ANTIGRAVITY_PROFILE: 'acc2', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir },
@@ -3597,4 +3602,123 @@ test('2.18.0 live bugfix #2: agent protocol comments under owner login do not tr
   });
   assert.equal(ownerReplyAfterCooldown.shouldWake, true);
   assert.equal(ownerReplyAfterCooldown.triggeredIssues[0].trigger, 'owner-reply');
+});
+
+// 2.18.0 live bugfix #3 (overnight monitoring): queued wakes without transcript SYSTEM_MESSAGE
+// must trigger backoff via state.json unansweredSendsSincePlanner and never re-fire safety-heartbeat every 10m.
+test('2.18.0 live bugfix #3: queued wakes trigger state-based backoff, gate safety-heartbeat on prevSentAtMs, and handle send-backoff', () => {
+  const po = { title: 'DOS Claw PO', label: 'line:dosclaw' };
+  const cfg = { heartbeatActiveMinutes: 180, heartbeatIdleMinutes: 720, multiSignal: true };
+  const activePrs = [{
+    number: 7076,
+    labels: [{ name: 'line:dosclaw' }],
+    mergeStateStatus: 'BLOCKED',
+    reviewDecision: '',
+    headRefOid: 'aaa111',
+    updatedAt: '2026-11-22T00:00:00Z',
+    statusCheckRollup: [],
+    comments: [],
+  }];
+  const tPlanner = Date.parse('2026-11-22T00:50:00Z');
+  const tWake1 = tPlanner + 190 * 60_000; // 190m idle -> safety-heartbeat (active)
+
+  // Transcript has 0 SYSTEM_MESSAGE wakes written (Antigravity queued send-message in memory).
+  const sessionUnchanged = {
+    conversationId: '7a7191cb-9410-453a-bcf9-766e15b21dcb',
+    lastPlannerMs: tPlanner,
+    lastActivityMs: tPlanner,
+    isRunning: false,
+    consecutiveUnansweredWakes: 0,
+  };
+
+  // Run 1 at +190m: fires safety-heartbeat once.
+  const r1 = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: null,
+    config: cfg,
+    nowMs: tWake1,
+    multiSignal: true,
+  });
+  assert.equal(r1.shouldWake, true);
+  assert.ok(r1.reasons.some((r) => r.startsWith('safety-heartbeat (active')));
+
+  // Simulate state.json recorded after successful send at tWake1.
+  const stateAfterSend1 = {
+    ...r1.nextPoState,
+    lastSentAtMs: tWake1,
+    unansweredSendsSincePlanner: 1,
+  };
+
+  // Run 2 at +10m (transcript STILL shows consecutiveUnansweredWakes=0): MUST enter backoff, NOT re-fire safety-heartbeat!
+  const r2 = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: stateAfterSend1,
+    config: cfg,
+    nowMs: tWake1 + 10 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(r2.shouldWake, false, 'queued wake without transcript SYSTEM_MESSAGE must enter backoff at +10m');
+  assert.equal(r2.skipped, 'backoff');
+  assert.equal(r2.consecutiveUnansweredWakes, 1);
+
+  // Run 3 at +60m: backoff expires -> quota-recovery-probe fires, NOT safety-heartbeat (only 60m since prevSentAtMs < 180m).
+  const r3 = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: stateAfterSend1,
+    config: cfg,
+    nowMs: tWake1 + 60 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(r3.shouldWake, true);
+  assert.ok(r3.reasons.includes('quota-recovery-probe'));
+  assert.equal(r3.reasons.some((r) => r.startsWith('safety-heartbeat')), false, 'safety-heartbeat must gate on max(lastPlannerMs, prevSentAtMs)');
+
+  // Legacy state.json with lastSentAtMs > lastPlannerMs (no unansweredSendsSincePlanner field) also backs off cleanly.
+  const legacyState = { ...r1.nextPoState, lastSentAtMs: tWake1 };
+  const rLegacy = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: legacyState,
+    config: cfg,
+    nowMs: tWake1 + 20 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(rLegacy.shouldWake, false);
+  assert.equal(rLegacy.skipped, 'backoff');
+
+  // Once PO finally answers after tWake1, unansweredSendsSincePlanner resets cleanly to 0 -> no-reason.
+  const sessionAnswered = {
+    ...sessionUnchanged,
+    lastPlannerMs: tWake1 + 65 * 60_000,
+    lastActivityMs: tWake1 + 65 * 60_000,
+  };
+  const rAnswered = evaluateSignals({
+    po,
+    session: sessionAnswered,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: { ...r3.nextPoState, lastSentAtMs: tWake1 + 60 * 60_000, unansweredSendsSincePlanner: 2 },
+    config: cfg,
+    nowMs: tWake1 + 70 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(rAnswered.shouldWake, false);
+  assert.equal(rAnswered.skipped, 'no-reason');
+  assert.equal(rAnswered.nextPoState.unansweredSendsSincePlanner, 0);
 });
