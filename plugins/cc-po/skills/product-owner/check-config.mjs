@@ -26,7 +26,10 @@ export const KNOWN = new Set([
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
   'promotion_reviews', 'shared_core_review', 'shared_core_wait', 'shared_core_label', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
-  'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes', 'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
+  'po_watchdog', 'po_wake', 'gatekeeper_model', 'gatekeeper_active_minutes',
+  'gatekeeper_heartbeat_active_minutes', 'gatekeeper_heartbeat_idle_minutes', 'gatekeeper_cron_minutes',
+  'po_context_compact_tokens',
+  'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
   'pr_monitor', 'sidebar_groups',
   'claim_command', 'pr_issue_keyword', 'po_labels', 'promotion_po',
@@ -293,11 +296,26 @@ export function checkConfig(text, { root } = {}) {
   }
   // The gatekeeper's numbers go into a scheduled task's prompt, so each must
   // be an integer in a range the task can use; a note may follow the number.
-  for (const [key, min, max] of [['gatekeeper_active_minutes', 5, 1440], ['gatekeeper_quiet_hours', 1, 72]]) {
+  for (const [key, min, max] of [
+    ['gatekeeper_active_minutes', 5, 1440],
+    ['gatekeeper_quiet_hours', 1, 72],
+    ['gatekeeper_cron_minutes', 1, 60],
+  ]) {
     const v = values[key];
     if (v === undefined) continue;
     const n = /^\d+(?![\w.-])/.test(v) ? parseInt(v, 10) : NaN;
     if (!(n >= min && n <= max)) errors.push(`${key} must start with an integer from ${min} to ${max}`);
+  }
+  for (const key of ['gatekeeper_heartbeat_active_minutes', 'gatekeeper_heartbeat_idle_minutes']) {
+    const v = values[key];
+    if (v === undefined) continue;
+    if (!/^[1-9]\d*(?![\w.-])/.test(v)) errors.push(`${key} must start with a positive integer`);
+  }
+  if (values.po_context_compact_tokens !== undefined) {
+    const v = values.po_context_compact_tokens.replace(/^`([^`]*)`/, '$1');
+    if (!isNone(v) && !/^[1-9]\d*(?![\w.-])/.test(v)) {
+      errors.push('po_context_compact_tokens must start with a positive integer or be none');
+    }
   }
   // gatekeeper_quiet_hours is no longer used (2.8.0): accepted for one version.
   if (values.gatekeeper_quiet_hours !== undefined) {

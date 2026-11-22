@@ -1,7 +1,7 @@
 // Run with: node --test
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -9,21 +9,61 @@ import { fileURLToPath } from 'node:url';
 
 import { checkConfig, findRoot, insideRoot, KNOWN, outsidePath, parseConfig, parsePoLabels, parseScopes, scopePaths } from '../plugins/cc-po/skills/product-owner/check-config.mjs';
 import {
+  acquirePoLock,
+  buildIssueFingerprint,
+  buildPrFingerprint,
+  checkProfileAffinity,
+  classifyIssueComment,
+  computeBackoffMs,
+  evaluateSignals,
+  extractIssueLabelsFromFingerprint,
+  isMultiSignalMode,
+  releasePoLock,
+} from '../plugins/cc-po/skills/product-owner/gatekeeper-core.mjs';
+import {
+  defaultQueryOpenIssues,
+  defaultQueryOpenPrs,
   evaluateGatekeeper,
   expandHome,
   extractActiveCheckInIds,
   inspectConversation,
+  isGatekeeperWakeText,
   pickAppStartTime,
+  readTurnStatus,
   resolveAgentApiCommand,
   resolveBrainDir,
   resolvePoConversationId,
   runGatekeeper,
+  RUNNING_MTIME_WINDOW_MS,
 } from '../plugins/cc-po/skills/product-owner/agy-gatekeeper.mjs';
+import {
+  evaluateClaudeGatekeeper,
+  parseClaudeEvalArgs,
+  queryClaudeOpenIssues,
+  queryClaudeOpenPrs,
+  runClaudeGatekeeperEval,
+} from '../plugins/cc-po/skills/product-owner/claude-gatekeeper-eval.mjs';
 import { adviseModels, classifyModelSpec } from '../plugins/cc-po/skills/product-owner/po-model-advisor.mjs';
 import { inspectScheduledGatekeepers, parseWatchdogApprovals } from '../plugins/cc-po/skills/product-owner/claude-gatekeeper-preflight.mjs';
 import { runHook as runPreStartHook } from '../plugins/cc-po/hooks/pre-start-session.mjs';
 import { runHook as runSessionStartHook } from '../plugins/cc-po/hooks/session-start-po.mjs';
-import { compactCheckInContent, runHook as runPostCheckInHook } from '../plugins/cc-po/hooks/post-checkin-cap.mjs';
+import {
+  CHECKIN_CAP_BYTES,
+  compactCheckInContent,
+  enforceCheckInCap,
+  getArchivePath,
+  isAntigravityPayload,
+  runHook as runPostCheckInHook,
+} from '../plugins/cc-po/hooks/post-checkin-cap.mjs';
+import {
+  classifyTurnStatus,
+  extractConversationId,
+  pruneStaleTurnStatus,
+  recordTurnStatus,
+  resolveEventName,
+  runHook as runAgyTurnStatusHook,
+  TURN_STATUS_TTL_MS,
+} from '../plugins/cc-po/hooks/agy-turn-status.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
@@ -745,9 +785,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.17.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.17.0');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.17.0');
+test('the version is 2.18.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.18.0');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.18.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -760,10 +800,15 @@ test('the version is 2.17.0 and the README describes the gatekeeper and Antigrav
   assert.match(readme, /### Upgrading to 2\.14\.0/);
   assert.match(readme, /### Upgrading to 2\.14\.1/);
   assert.match(readme, /### Upgrading to 2\.15\.0/);
+  assert.match(readme, /### Upgrading to 2\.16\.0/);
+  assert.match(readme, /### Upgrading to 2\.17\.0/);
+  assert.match(readme, /### Upgrading to 2\.18\.0/);
   assert.match(readme, /The Claude app gatekeeper keeps no state file/);
   assert.match(readme, /Wake-ups \(one gatekeeper per repository\)/);
   assert.match(readme, /`po_wake: watchdog` keeps the earlier behaviour/);
   assert.match(readme, /agy-gatekeeper\.mjs/);
+  assert.match(readme, /gatekeeper-core\.mjs/);
+  assert.match(readme, /claude-gatekeeper-eval\.mjs/);
 });
 
 // The session fields are normally present; get_session is only the fallback.
@@ -880,11 +925,13 @@ test('agy-gatekeeper inspects local transcripts, wakes a non-running PO for rest
     assert.deepEqual([...extractActiveCheckInIds(readFileSync(engageCheckIn, 'utf8'), new Set([engagePoId, meetingsPoId]))], [engageSubId]);
 
     const configPath = join(dir, 'dos-ludy-agy-gatekeeper.json');
-    // An old config still loads: stateFile and quietHours are ignored.
+    // An old legacy config still loads (explicit multiSignal: false opts into legacy activeMinutes mode):
+    // stateFile and quietHours are ignored.
     writeFileSync(configPath, JSON.stringify({
       repo: 'DOS/Ludy',
       owner: 'JOY',
       language: 'Vietnamese',
+      multiSignal: false,
       activeMinutes: 60,
       quietHours: 4,
       compactTokens: 500000,
@@ -1426,7 +1473,7 @@ test('2.17.0 Progressive Disclosure keeps SKILL.md <= 18 KB, AGENTS.md <= 3.2 KB
   }
 });
 
-test('2.17.0 rolling series config, po-model-advisor, and Claude-only hooks work safely and fail open', () => {
+test('2.17.0-2.18.0 rolling series config, po-model-advisor, and Claude + Antigravity hooks work safely and fail open', () => {
   for (const series of ['opus', 'sonnet', 'haiku', 'default', 'family:sonnet', 'sonnet (Antigravity: inherit on Orchestrator (Carbon))']) {
     const r = checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n- agent_model: ${series}\n- gatekeeper_model: haiku`));
     assert.deepEqual(r.errors, [], series);
@@ -1446,11 +1493,25 @@ test('2.17.0 rolling series config, po-model-advisor, and Claude-only hooks work
   assert.match(advice.warnings.join('\n'), /Pinned minor\/snapshot model 'claude-sonnet-5-5'/);
   assert.equal(advice.swarmHints.byRole.explorer, 'flash_lite');
 
-  assert.equal(existsSync(join(root, 'plugins/cc-po/hooks.json')), false, 'must NOT place root hooks.json in plugin root');
+  // v2.18.0 ships Antigravity native root hooks.json (PostToolUse + Stop only; no PostInvocation) while keeping mcp_config.json absent.
+  assert.equal(existsSync(join(root, 'plugins/cc-po/hooks.json')), true, 'Antigravity root hooks.json must exist in v2.18.0');
   assert.equal(existsSync(join(root, 'plugins/cc-po/mcp_config.json')), false);
+  const agyHooksCfg = JSON.parse(read('plugins/cc-po/hooks.json'));
+  assert.ok(Array.isArray(agyHooksCfg['cc-po-checkin-cap']?.PostToolUse) && agyHooksCfg['cc-po-checkin-cap'].PostToolUse.length === 1);
+  assert.match(agyHooksCfg['cc-po-checkin-cap'].PostToolUse[0].matcher, /write_file.*edit_file/);
+  assert.equal(agyHooksCfg['cc-po-checkin-cap'].PostToolUse[0].hooks[0].type, 'command');
+  assert.equal(agyHooksCfg['cc-po-checkin-cap'].PostToolUse[0].hooks[0].command, 'node ./hooks/post-checkin-cap.mjs');
+  assert.ok(agyHooksCfg['cc-po-checkin-cap'].PostToolUse[0].hooks[0].timeout > 0);
+  assert.equal(agyHooksCfg['cc-po-turn-status']?.PostInvocation, undefined, 'PostInvocation must not be registered in root hooks.json');
+  const stopHandlers = agyHooksCfg['cc-po-turn-status']?.Stop;
+  assert.ok(Array.isArray(stopHandlers) && stopHandlers.length === 1, 'missing Stop handler');
+  assert.equal(stopHandlers[0].type, 'command');
+  assert.equal(stopHandlers[0].command, 'node ./hooks/agy-turn-status.mjs');
+  assert.ok(stopHandlers[0].timeout > 0);
+
   const hooksCfg = JSON.parse(read('plugins/cc-po/hooks/hooks.json'));
   assert.ok(hooksCfg.hooks.PreToolUse && hooksCfg.hooks.SessionStart && hooksCfg.hooks.PostToolUse);
-  for (const file of ['pre-start-session.mjs', 'session-start-po.mjs', 'post-checkin-cap.mjs']) {
+  for (const file of ['pre-start-session.mjs', 'session-start-po.mjs', 'post-checkin-cap.mjs', 'agy-turn-status.mjs']) {
     assert.ok(existsSync(join(root, 'plugins/cc-po/hooks', file)), `missing hook script ${file}`);
   }
 
@@ -1478,20 +1539,35 @@ test('2.17.0 rolling series config, po-model-advisor, and Claude-only hooks work
     assert.match(ssOut.hookSpecificOutput.additionalContext, /<= 6 KB/);
 
     const checkIn = join(dir, 'dos-dos-ai-gateway-antigravity-po-checkin.md');
-    const longBullets = Array.from({ length: 120 }, (_, i) => `- Closed PR #${7000 + i} fixed routing bug item ${i} cleanly`).join('\n');
-    const oversizedArchive = `# Gateway PO check-in\n\nSession: \`11111111-2222-3333-4444-555555555555\`\n\n## Live State\n- Active PR #123\n\n## Recently closed\n${longBullets}\n`;
+    const archiveFile = getArchivePath(checkIn);
+    const longClosedBullets = Array.from({ length: 120 }, (_, i) => `- Closed PR #${7000 + i} fixed routing bug item ${i} cleanly`).join('\n');
+    const oversizedArchive = `# Gateway PO check-in\n\nSession: \`11111111-2222-3333-4444-555555555555\`\n\n## Live State\n- Active PR #123\n\n## Recently closed\n${longClosedBullets}\n`;
     writeFileSync(checkIn, oversizedArchive, 'utf8');
     const compactedOut = runPostCheckInHook(JSON.stringify({ tool_input: { file_path: checkIn } }));
     assert.match(compactedOut.hookSpecificOutput.additionalContext, /safely compacted/);
     const afterText = readFileSync(checkIn, 'utf8');
-    assert.ok(Buffer.byteLength(afterText, 'utf8') <= 6144);
+    assert.ok(Buffer.byteLength(afterText, 'utf8') <= CHECKIN_CAP_BYTES);
     assert.match(afterText, /Active PR #123/);
+    assert.match(afterText, /Closed PR #7000/, 'newest top items in Recently closed are preserved when within cap');
+    assert.ok(existsSync(archiveFile), 'archive file must be created on rotation');
+    assert.match(readFileSync(archiveFile, 'utf8'), /Closed PR #7119/);
 
-    const unsafeOversized = `# PO check-in\n\n## Live State\n${longBullets}\n`;
-    writeFileSync(checkIn, unsafeOversized, 'utf8');
+    // Completed bullets directly inside Live State are safely rotated to archive while keeping active items.
+    const liveWithClosed = `# PO check-in\n\n## Live State\n- Active PR #456 in-flight waiting on CI\n${longClosedBullets}\n`;
+    writeFileSync(checkIn, liveWithClosed, 'utf8');
+    const liveCompacted = runPostCheckInHook(JSON.stringify({ tool_input: { file_path: checkIn } }));
+    assert.match(liveCompacted.hookSpecificOutput.additionalContext, /safely compacted/);
+    const liveAfter = readFileSync(checkIn, 'utf8');
+    assert.ok(Buffer.byteLength(liveAfter, 'utf8') <= CHECKIN_CAP_BYTES);
+    assert.match(liveAfter, /Active PR #456 in-flight waiting on CI/);
+
+    // Purely active/in-flight content must NEVER be deleted or rotated; emits a warning only.
+    const longActiveBullets = Array.from({ length: 120 }, (_, i) => `- Active PR #${8000 + i} in-flight waiting for CI review item ${i}`).join('\n');
+    const activeOnlyOversized = `# PO check-in\n\n## Live State\n${longActiveBullets}\n`;
+    writeFileSync(checkIn, activeOnlyOversized, 'utf8');
     const warnOnly = runPostCheckInHook(JSON.stringify({ tool_input: { file_path: checkIn } }));
-    assert.match(warnOnly.hookSpecificOutput.additionalContext, /no safe trailing archived section/);
-    assert.equal(readFileSync(checkIn, 'utf8'), unsafeOversized);
+    assert.match(warnOnly.hookSpecificOutput.additionalContext, /no safe historical\/completed items to rotate automatically/);
+    assert.equal(readFileSync(checkIn, 'utf8'), activeOnlyOversized);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1624,4 +1700,2025 @@ test('2.18.0 Antigravity Neon/Hydrogen quota-fallback policy and model advisor s
   assert.equal(neonAdvice.swarmHints.byRole.po, 'gemini-pro-orchestrator-neon');
   assert.equal(neonAdvice.swarmHints.byRole.reviewer, 'gemini-4-neon-high');
   assert.equal(neonAdvice.swarmHints.byRole['security-reviewer'], 'gemini-4-neon-high');
+});
+
+// 2.18.0: shared 0-token multi-signal gatekeeper-core.mjs primitives.
+test('2.18.0 gatekeeper-core: PR/issue fingerprints, backoff schedules, profile affinity, and atomic lockfile', () => {
+  // PR fingerprints detect CHANGES_REQUESTED, DIRTY, CI failure, new comment, SHA change, and dedupe when unchanged.
+  const basePr = {
+    number: 42,
+    mergeStateStatus: 'CLEAN',
+    reviewDecision: 'APPROVED',
+    headRefOid: 'abc1234',
+    updatedAt: '2026-11-21T01:00:00Z',
+    statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }],
+    comments: [{ author: { login: 'bot' }, createdAt: '2026-11-21T00:30:00Z', body: 'ok' }],
+  };
+  const fpBase = buildPrFingerprint(basePr);
+  assert.equal(buildPrFingerprint({ ...basePr }), fpBase, 'identical PR must produce identical fingerprint');
+  assert.notEqual(buildPrFingerprint({ ...basePr, reviewDecision: 'CHANGES_REQUESTED' }), fpBase);
+  assert.notEqual(buildPrFingerprint({ ...basePr, mergeStateStatus: 'DIRTY' }), fpBase);
+  assert.notEqual(
+    buildPrFingerprint({ ...basePr, statusCheckRollup: [{ conclusion: 'FAILURE', status: 'COMPLETED' }] }),
+    fpBase,
+  );
+  assert.notEqual(
+    buildPrFingerprint({
+      ...basePr,
+      comments: [
+        ...basePr.comments,
+        { author: { login: 'JOY' }, createdAt: '2026-11-21T01:15:00Z', body: 'please fix edge case' },
+      ],
+    }),
+    fpBase,
+  );
+  assert.notEqual(buildPrFingerprint({ ...basePr, headRefOid: 'def5678' }), fpBase);
+
+  // Issue fingerprints & comment classification detect handoff:, owner reply, peer PO, and dedupe when unchanged.
+  const baseIssue = {
+    number: 108,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: '2026-11-21T01:00:00Z',
+    comments: [{ author: { login: 'worker' }, createdAt: '2026-11-21T00:50:00Z', body: 'checkpoint: working' }],
+  };
+  const issueOpts = { owner: 'JOY', peerPoLogins: ['peer-bot'] };
+  const fpIssueBase = buildIssueFingerprint(baseIssue, issueOpts);
+  assert.equal(buildIssueFingerprint({ ...baseIssue }, issueOpts), fpIssueBase);
+  const fpHandoff = buildIssueFingerprint({
+    ...baseIssue,
+    updatedAt: '2026-11-21T01:20:00Z',
+    comments: [{ author: { login: 'worker' }, createdAt: '2026-11-21T01:20:00Z', body: 'handoff: ready for PO deploy' }],
+  }, issueOpts);
+  assert.notEqual(fpHandoff, fpIssueBase);
+  assert.match(fpHandoff, /:handoff$/);
+  const fpOwner = buildIssueFingerprint({
+    ...baseIssue,
+    updatedAt: '2026-11-21T01:25:00Z',
+    comments: [{ author: { login: 'JOY' }, createdAt: '2026-11-21T01:25:00Z', body: 'Approved, proceed' }],
+  }, issueOpts);
+  assert.notEqual(fpOwner, fpIssueBase);
+  assert.match(fpOwner, /:owner$/);
+  assert.equal(classifyIssueComment({ author: { login: 'peer-bot' }, body: 'note' }, issueOpts).tag, 'peer-po');
+  assert.equal(classifyIssueComment({ author: { login: 'someone' }, body: 'Security review requested (Core PO)' }, issueOpts).isPeerPo, true);
+
+  // Exponential backoff: 1h -> 2h -> 4h (capped) and quota probe 30m -> 60m -> 120m (capped).
+  assert.equal(computeBackoffMs(0), 0);
+  assert.equal(computeBackoffMs(-1), 0);
+  assert.equal(computeBackoffMs(1, 60, 240), 60 * 60_000);
+  assert.equal(computeBackoffMs(2, 60, 240), 120 * 60_000);
+  assert.equal(computeBackoffMs(3, 60, 240), 240 * 60_000);
+  assert.equal(computeBackoffMs(5, 60, 240), 240 * 60_000);
+  assert.equal(computeBackoffMs(1, 30, 120), 30 * 60_000);
+  assert.equal(computeBackoffMs(2, 30, 120), 60 * 60_000);
+  assert.equal(computeBackoffMs(3, 30, 120), 120 * 60_000);
+  assert.equal(computeBackoffMs(4, 30, 120), 120 * 60_000);
+
+  // Profile Affinity Guard: refuse cross-profile (acc2 -> acc3), allow same profile or single-profile.
+  const mismatch = checkProfileAffinity({
+    envProfile: 'acc2',
+    brainDir: '/Users/JOY/Library/Application Support/Antigravity Profiles/acc3/gemini/antigravityprofileacc3/brain',
+  });
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.sidecarProfile, 'acc2');
+  assert.equal(mismatch.targetProfile, 'acc3');
+  assert.match(mismatch.reason, /profile-mismatch: sidecar=acc2 target=acc3/);
+
+  const inferredMismatch = checkProfileAffinity({
+    appDataDir: '/Users/JOY/Library/Application Support/Antigravity Profiles/acc2/gemini/antigravityprofileacc2',
+    brainDir: '/Users/JOY/Library/Application Support/Antigravity Profiles/acc3/gemini/antigravityprofileacc3/brain',
+  });
+  assert.equal(inferredMismatch.ok, false);
+
+  const sameProfile = checkProfileAffinity({
+    envProfile: 'acc2',
+    brainDir: '/Users/JOY/Library/Application Support/Antigravity Profiles/acc2/gemini/antigravityprofileacc2/brain',
+  });
+  assert.equal(sameProfile.ok, true);
+  assert.equal(sameProfile.reason, null);
+
+  const singleProfile = checkProfileAffinity({
+    envProfile: '',
+    appDataDir: '/Users/JOY/.gemini/antigravity',
+    brainDir: '/Users/JOY/.gemini/antigravity/brain',
+  });
+  assert.equal(singleProfile.ok, true);
+
+  // Atomic per-PO lockfile: prevents concurrent double-wake, cleans stale TTL or dead-PID locks, fails open when empty.
+  const disabledLock = acquirePoLock('', 'dos/repo-po');
+  assert.equal(disabledLock.acquired, true);
+  assert.equal(disabledLock.disabled, true);
+
+  const dir = mkdtempSync(join(tmpdir(), 'ccpo-lock-'));
+  try {
+    const t0 = Date.parse('2026-11-21T02:00:00Z');
+    const first = acquirePoLock(dir, 'DOS/Repo-po1', 120_000, t0);
+    assert.equal(first.acquired, true);
+    assert.equal(first.staleRemoved, false);
+    assert.ok(existsSync(first.lockPath));
+
+    // Concurrent acquire while lock is live & fresh must fail.
+    const second = acquirePoLock(dir, 'DOS/Repo-po1', 120_000, t0 + 10_000);
+    assert.equal(second.acquired, false);
+    assert.equal(second.reason, 'locked');
+    assert.equal(second.holderPid, process.pid);
+
+    // Expired TTL (> 120s) is automatically reclaimed.
+    const reclaimedTtl = acquirePoLock(dir, 'DOS/Repo-po1', 120_000, t0 + 180_000);
+    assert.equal(reclaimedTtl.acquired, true);
+    assert.equal(reclaimedTtl.staleRemoved, true);
+    assert.equal(releasePoLock(reclaimedTtl.lockPath), true);
+    assert.equal(existsSync(reclaimedTtl.lockPath), false);
+
+    // Dead PID lockfile is automatically reclaimed even within TTL.
+    const deadLockPath = join(dir, 'dos-repo-dead.lock');
+    writeFileSync(deadLockPath, JSON.stringify({ pid: 999_999_991, key: 'dos/repo-dead', acquiredAtMs: t0 }), 'utf8');
+    const reclaimedPid = acquirePoLock(dir, 'dos/repo-dead', 120_000, t0 + 5_000);
+    assert.equal(reclaimedPid.acquired, true);
+    assert.equal(reclaimedPid.staleRemoved, true);
+    releasePoLock(reclaimedPid.lockPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('2.18.0 gatekeeper-core: evaluateSignals covers all 6 signals, cooldowns, backoff, and legacy activeMinutes', () => {
+  const po = { title: 'Core PO', label: 'line:core' };
+  const baseMs = Date.parse('2026-11-21T05:00:00Z');
+  const makeSession = (overrides = {}) => ({
+    conversationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    isRunning: false,
+    lastPlannerMs: baseMs - 20 * 60_000,
+    lastActivityMs: baseMs - 20 * 60_000,
+    consecutiveUnansweredWakes: 0,
+    ...overrides,
+  });
+
+  // Signal 1: restart compared against lastPlannerMs (not SYSTEM_MESSAGE).
+  const r1 = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 40 * 60_000, lastStepMs: baseMs - 5 * 60_000 }),
+    restartTimes: { bootTime: '', appStartTime: new Date(baseMs - 15 * 60_000).toISOString() },
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r1.shouldWake, true);
+  assert.deepEqual(r1.reasons, ['restart']);
+
+  // Signal 2: pr-state-changed detects CHANGES_REQUESTED, DIRTY, CI fail, new comment, and dedupes identical fingerprints.
+  const prDirty = {
+    number: 501,
+    labels: [{ name: 'line:core' }],
+    mergeStateStatus: 'DIRTY',
+    reviewDecision: 'CHANGES_REQUESTED',
+    headRefOid: '111aaa',
+    updatedAt: new Date(baseMs - 10 * 60_000).toISOString(),
+    statusCheckRollup: [{ conclusion: 'FAILURE', status: 'COMPLETED' }],
+    comments: [{ author: { login: 'reviewer' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'fix conflict' }],
+  };
+  const r2a = evaluateSignals({
+    po,
+    session: makeSession(),
+    openPrs: [prDirty],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r2a.shouldWake, true);
+  assert.deepEqual(r2a.reasons, ['pr-state-changed']);
+  assert.equal(r2a.changedPrs[0].number, 501);
+  assert.equal(r2a.changedPrs[0].ciFail, 1);
+  assert.equal(r2a.changedPrs[0].hasNewComment, true);
+
+  // Dedupe when fingerprint has not changed in prevPoState.
+  const r2b = evaluateSignals({
+    po,
+    session: makeSession(),
+    openPrs: [prDirty],
+    openIssues: [],
+    prevPoState: r2a.nextPoState,
+    nowMs: baseMs + 10 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(r2b.shouldWake, false);
+  assert.equal(r2b.skipped, 'no-reason');
+
+  // Re-triggers when PR fingerprint changes (e.g. new SHA / CLEAN).
+  const r2c = evaluateSignals({
+    po,
+    session: makeSession(),
+    openPrs: [{ ...prDirty, mergeStateStatus: 'CLEAN', reviewDecision: 'APPROVED', headRefOid: '222bbb' }],
+    openIssues: [],
+    prevPoState: r2a.nextPoState,
+    nowMs: baseMs + 10 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(r2c.shouldWake, true);
+  assert.deepEqual(r2c.reasons, ['pr-state-changed']);
+
+  // Signal 3: subagent-stalled-or-errored + 120m cooldown.
+  const subId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const r3a = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 50 * 60_000 }),
+    subSessions: [{
+      conversationId: subId,
+      role: '#99 worker',
+      isRunning: false,
+      lastActivityMs: baseMs - 35 * 60_000,
+      hasError: false,
+      waitingForUser: false,
+      sentMessageToPoAfterLastTurn: false,
+    }],
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r3a.shouldWake, true);
+  assert.deepEqual(r3a.reasons, ['subagent-stalled-or-errored']);
+  assert.equal(r3a.stalledSubs[0].kind, 'stalled');
+
+  // Cooldown suppresses repeated subagent alert within 120m.
+  const r3Cooldown = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 50 * 60_000 }),
+    subSessions: [{
+      conversationId: subId,
+      role: '#99 worker',
+      isRunning: false,
+      lastActivityMs: baseMs - 35 * 60_000,
+      sentMessageToPoAfterLastTurn: false,
+    }],
+    openPrs: [],
+    openIssues: [],
+    prevPoState: r3a.nextPoState,
+    nowMs: baseMs + 30 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(r3Cooldown.shouldWake, false);
+  assert.equal(r3Cooldown.skipped, 'no-reason');
+
+  // Subagent that already called send_message back to PO is NOT flagged as stalled; errored subagent IS flagged.
+  const r3Sent = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 50 * 60_000 }),
+    subSessions: [{
+      conversationId: subId,
+      role: '#99 worker',
+      isRunning: false,
+      lastActivityMs: baseMs - 35 * 60_000,
+      sentMessageToPoAfterLastTurn: true,
+    }],
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r3Sent.shouldWake, false);
+
+  const r3Err = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 50 * 60_000 }),
+    subSessions: [{
+      conversationId: subId,
+      role: '#99 worker',
+      isRunning: false,
+      lastActivityMs: baseMs - 10 * 60_000,
+      hasError: true,
+    }],
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r3Err.shouldWake, true);
+  assert.equal(r3Err.stalledSubs[0].kind, 'errored');
+
+  // Signal 4: issue-dispatchable-or-owner-reply (slot check, blocked filter, handoff/owner bypass).
+  const openIssue = {
+    number: 301,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+    comments: [],
+  };
+  const blockedIssue = {
+    number: 302,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }, { name: 'blocked' }],
+    updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+    comments: [],
+  };
+  const r4Dispatch = evaluateSignals({
+    po,
+    session: makeSession(),
+    subSessions: [],
+    openPrs: [],
+    openIssues: [openIssue, blockedIssue],
+    config: { owner: 'JOY', subSessionsNormal: 2 },
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r4Dispatch.shouldWake, true);
+  assert.deepEqual(r4Dispatch.reasons, ['issue-dispatchable-or-owner-reply']);
+  assert.deepEqual(r4Dispatch.triggeredIssues.map((i) => i.number), [301]);
+
+  // Full slots suppress plain dispatchable issue, but owner reply / handoff still wakes.
+  const twoActiveSubs = [
+    { conversationId: '11111111-1111-1111-1111-111111111111', isRunning: true, lastActivityMs: baseMs - 60_000 },
+    { conversationId: '22222222-2222-2222-2222-222222222222', isRunning: true, lastActivityMs: baseMs - 60_000 },
+  ];
+  const r4Full = evaluateSignals({
+    po,
+    session: makeSession(),
+    subSessions: twoActiveSubs,
+    openPrs: [],
+    openIssues: [openIssue],
+    config: { owner: 'JOY', subSessionsNormal: 2 },
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r4Full.shouldWake, false);
+
+  const r4Owner = evaluateSignals({
+    po,
+    session: makeSession(),
+    subSessions: twoActiveSubs,
+    openPrs: [],
+    openIssues: [{
+      ...blockedIssue,
+      comments: [{ author: { login: 'JOY' }, createdAt: new Date(baseMs - 3 * 60_000).toISOString(), body: 'Go ahead' }],
+    }],
+    config: { owner: 'JOY', subSessionsNormal: 2 },
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r4Owner.shouldWake, true);
+  assert.equal(r4Owner.triggeredIssues[0].trigger, 'owner-reply');
+
+  // Signal 5: quota-recovery-probe & backoff (30m -> 60m -> 120m for quota; 1h -> 2h -> 4h for silent unanswered).
+  const r5QuotaEarly = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 20 * 60_000, lastTurnStatus: 'quota', consecutiveUnansweredWakes: 0 }),
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r5QuotaEarly.shouldWake, false);
+
+  const r5Quota30m = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 35 * 60_000, lastTurnStatus: 'quota', consecutiveUnansweredWakes: 0 }),
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r5Quota30m.shouldWake, true);
+  assert.deepEqual(r5Quota30m.reasons, ['quota-recovery-probe']);
+  assert.equal(r5Quota30m.signals.quotaRecoveryProbe.probeWaitMinutes, 30);
+
+  // After 1 unanswered wake on quota, next probe waits 60m -> 45m is skipped as 'backoff'.
+  const r5QuotaBackoff = evaluateSignals({
+    po,
+    session: makeSession({
+      lastPlannerMs: baseMs - 90 * 60_000,
+      lastTurnStatus: 'quota',
+      consecutiveUnansweredWakes: 1,
+      lastWakeAtMs: baseMs - 45 * 60_000,
+    }),
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r5QuotaBackoff.shouldWake, false);
+  assert.equal(r5QuotaBackoff.skipped, 'backoff');
+
+  // After 2 silent unanswered wakes, required backoff is 2h (120m), and shouldAlertBackoff is true.
+  const r5SilentBackoff = evaluateSignals({
+    po,
+    session: makeSession({
+      lastPlannerMs: baseMs - 300 * 60_000,
+      consecutiveUnansweredWakes: 2,
+      lastWakeAtMs: baseMs - 90 * 60_000,
+    }),
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r5SilentBackoff.shouldWake, false);
+  assert.equal(r5SilentBackoff.skipped, 'backoff');
+  assert.equal(r5SilentBackoff.shouldAlertBackoff, true);
+
+  // A fresh restart occurring AFTER the last failed wake bypasses backoff immediately.
+  const r5RestartBypass = evaluateSignals({
+    po,
+    session: makeSession({
+      lastPlannerMs: baseMs - 300 * 60_000,
+      consecutiveUnansweredWakes: 2,
+      lastWakeAtMs: baseMs - 30 * 60_000,
+    }),
+    restartTimes: { bootTime: '', appStartTime: new Date(baseMs - 5 * 60_000).toISOString() },
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r5RestartBypass.shouldWake, true);
+  assert.ok(r5RestartBypass.reasons.includes('restart'));
+
+  // Signal 6: safety-heartbeat (180m active vs 720m idle) + legacy activeMinutes backwards compatibility.
+  const idle200mSession = makeSession({ lastPlannerMs: baseMs - 200 * 60_000 });
+  const r6IdleNoWork = evaluateSignals({
+    po,
+    session: idle200mSession,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r6IdleNoWork.shouldWake, false, '200m idle with no work in flight must wait for 720m threshold');
+
+  const r6Idle730m = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 730 * 60_000 }),
+    subSessions: [],
+    openPrs: [],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r6Idle730m.shouldWake, true);
+  assert.match(r6Idle730m.reasons[0], /^safety-heartbeat \(idle, 730m\)$/);
+
+  const r6ActiveWork = evaluateSignals({
+    po,
+    session: idle200mSession,
+    subSessions: [],
+    openPrs: [{ number: 55, labels: [{ name: 'line:core' }], mergeStateStatus: 'BLOCKED', updatedAt: new Date(baseMs - 250 * 60_000).toISOString() }],
+    openIssues: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(r6ActiveWork.shouldWake, true);
+  assert.match(r6ActiveWork.reasons[0], /^safety-heartbeat \(active, 200m\)$/);
+
+  // Legacy mode honors activeMinutes (e.g. 60m) with 'quiet for N minutes'.
+  const r6Legacy = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 65 * 60_000 }),
+    openPrs: [],
+    config: { activeMinutes: 60 },
+    nowMs: baseMs,
+    multiSignal: false,
+  });
+  assert.equal(r6Legacy.shouldWake, true);
+  assert.deepEqual(r6Legacy.reasons, ['quiet for 65 minutes']);
+
+  // Debounce: a wake sent < 90s ago with no newer planner response is debounced.
+  const rDebounced = evaluateSignals({
+    po,
+    session: makeSession({ lastPlannerMs: baseMs - 300 * 60_000 }),
+    prevPoState: { lastSentAtMs: baseMs - 45_000 },
+    openPrs: [],
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(rDebounced.shouldWake, false);
+  assert.equal(rDebounced.skipped, 'debounced');
+});
+
+// 2.18.0: agy-gatekeeper runtime invariants (lastPlannerMs fix, 90s debounce, state persistence, turn-status, affinity, locks, alert).
+test('2.18.0 agy-gatekeeper: lastPlannerMs fix, 90s debounce, ANTIGRAVITY_EXECUTABLE_DATA_DIR state, turn-status, profile affinity, lockfile, and backoff alert', () => {
+  assert.equal(RUNNING_MTIME_WINDOW_MS, 90_000);
+
+  const dir = mkdtempSync(join(tmpdir(), 'agy-v218-'));
+  try {
+    const brainDir = join(dir, 'Antigravity Profiles', 'acc2', 'gemini', 'antigravityprofileacc2', 'brain');
+    const execDataDir = join(dir, 'exec-data');
+    const turnStatusDir = join(dir, 'turn-status');
+    const lockDir = join(dir, 'locks');
+    const poId = 'aaaaaaaa-1111-2222-3333-444444444444';
+    const subId = 'bbbbbbbb-1111-2222-3333-444444444444';
+
+    const writeTranscript = (id, steps, mtimeIso) => {
+      const logDir = join(brainDir, id, '.system_generated', 'logs');
+      mkdirSync(logDir, { recursive: true });
+      const file = join(logDir, 'transcript.jsonl');
+      writeFileSync(file, `${steps.map((s) => JSON.stringify(s)).join('\n')}\n`, 'utf8');
+      const dt = new Date(mtimeIso || steps[steps.length - 1].created_at);
+      utimesSync(file, dt, dt);
+    };
+
+    // Bug fix: SYSTEM_MESSAGE sent by gatekeeper must NOT advance lastPlannerMs or erase restart/PR signals.
+    writeTranscript(poId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T01:00:00Z' },
+      { step_index: 2, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-21T02:00:00Z', content: 'Gatekeeper wake at 2026-11-21T02:00:00Z (reasons: restart).' },
+      { step_index: 3, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-21T03:05:00Z', content: 'Gatekeeper wake at 2026-11-21T03:05:00Z (reasons: restart).' },
+    ]);
+
+    const tCheck = Date.parse('2026-11-21T03:30:00Z');
+    const inspected = inspectConversation(brainDir, poId, tCheck, { turnStatusDir });
+    assert.equal(inspected.lastPlannerMs, Date.parse('2026-11-21T01:00:00Z'));
+    assert.equal(inspected.lastActivityMs, Date.parse('2026-11-21T01:00:00Z'));
+    assert.equal(inspected.lastStepMs, Date.parse('2026-11-21T03:05:00Z'));
+    assert.equal(inspected.consecutiveUnansweredWakes, 2);
+    assert.equal(inspected.lastWakeAtMs, Date.parse('2026-11-21T03:05:00Z'));
+    assert.equal(inspected.isRunning, false);
+
+    // 90s mtime debounce: mtime 40s ago -> mtimeRunning: true; mtime 95s ago -> mtimeRunning: false.
+    const within90s = inspectConversation(brainDir, poId, Date.parse('2026-11-21T03:05:40Z'), { turnStatusDir });
+    assert.equal(within90s.mtimeRunning, true);
+    assert.equal(within90s.isRunning, true);
+    const past90s = inspectConversation(brainDir, poId, Date.parse('2026-11-21T03:06:35Z'), { turnStatusDir });
+    assert.equal(past90s.mtimeRunning, false);
+    assert.equal(past90s.isRunning, false);
+
+    // Fail-open turn-status/<id>.json reading (valid quota + corrupt JSON fail-open).
+    mkdirSync(turnStatusDir, { recursive: true });
+    writeFileSync(join(turnStatusDir, `${poId}.json`), JSON.stringify({
+      conversationId: poId,
+      status: 'quota',
+      updatedAt: '2026-11-21T01:05:00Z',
+      event: 'Stop',
+    }), 'utf8');
+    const withQuotaStatus = inspectConversation(brainDir, poId, tCheck, { turnStatusDir });
+    assert.equal(withQuotaStatus.lastTurnStatus, 'quota');
+    assert.equal(withQuotaStatus.lastErrorType, 'quota');
+    assert.equal(readTurnStatus(poId, { turnStatusDir }).status, 'quota');
+
+    writeFileSync(join(turnStatusDir, `${poId}.json`), '{broken json', 'utf8');
+    assert.equal(readTurnStatus(poId, { turnStatusDir }), null);
+    assert.equal(inspectConversation(brainDir, poId, tCheck, { turnStatusDir }).lastTurnStatus, null);
+
+    // Subagent inspection: ask_question sets waitingForUser, send_message sets sentMessageToPoAfterLastTurn.
+    writeTranscript(subId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T02:00:00Z', tool_calls: [{ name: 'ask_question', args: {} }] },
+    ]);
+    assert.equal(inspectConversation(brainDir, subId, tCheck, { turnStatusDir }).waitingForUser, true);
+    writeTranscript(subId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T02:00:00Z', tool_calls: [{ name: 'send_message', args: {} }] },
+    ]);
+    assert.equal(inspectConversation(brainDir, subId, tCheck, { turnStatusDir }).sentMessageToPoAfterLastTurn, true);
+
+    const cfgPath = join(dir, 'gk-v218.json');
+    writeFileSync(cfgPath, JSON.stringify({
+      repo: 'DOS/Core',
+      owner: 'JOY',
+      language: 'English',
+      heartbeatActiveMinutes: 180,
+      heartbeatIdleMinutes: 720,
+      brainDir,
+      pos: [{ title: 'Core PO', conversationId: poId, label: 'line:core' }],
+    }), 'utf8');
+
+    // Profile Affinity Guard: acc3 env targeting acc2 brainDir is refused with skipped: profile-mismatch, zero sends.
+    const sentCross = [];
+    const crossRes = runGatekeeper(cfgPath, {
+      env: { ANTIGRAVITY_PROFILE: 'acc3', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir },
+      nowMs: tCheck,
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '2026-11-21T01:30:00Z' }),
+      queryOpenPrs: () => [],
+      queryOpenIssues: () => [],
+      sendMessage: (id, msg) => sentCross.push({ id, msg }),
+    });
+    assert.equal(crossRes.status.skipped, 'profile-mismatch');
+    assert.match(crossRes.summary, /skipped: profile-mismatch/);
+    assert.equal(sentCross.length, 0);
+
+    // CLI Profile Affinity Guard exits 0 with JSON skipped: profile-mismatch.
+    const gkScript = join(root, 'plugins/cc-po/skills/product-owner/agy-gatekeeper.mjs');
+    const cliMismatch = spawnSync(process.execPath, [gkScript, cfgPath, '--dry-run', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, ANTIGRAVITY_PROFILE: 'acc3' },
+    });
+    assert.equal(cliMismatch.status, 0, cliMismatch.stderr);
+    assert.equal(JSON.parse(cliMismatch.stdout).skipped, 'profile-mismatch');
+
+    // Backoff alert cooldown (4h): 2 unanswered wakes in backoff triggers notify once, then suppresses within 4h.
+    const alerts = [];
+    const rBackoff1 = runGatekeeper(cfgPath, {
+      env: { ANTIGRAVITY_PROFILE: 'acc2', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir },
+      nowMs: Date.parse('2026-11-21T03:30:00Z'),
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '2026-11-21T00:00:00Z' }),
+      queryOpenPrs: () => [],
+      queryOpenIssues: () => [],
+      sendMessage: () => { throw new Error('must not wake during backoff'); },
+      notify: (t, m) => { alerts.push({ t, m }); return true; },
+    });
+    assert.equal(rBackoff1.actions[0].skipped, 'backoff');
+    assert.equal(alerts.length, 1);
+    assert.ok(existsSync(join(execDataDir, 'state.json')), 'state.json auto-persisted under ANTIGRAVITY_EXECUTABLE_DATA_DIR');
+
+    // Second run 15 min later: still in 4h alert cooldown -> notify NOT called again.
+    runGatekeeper(cfgPath, {
+      env: { ANTIGRAVITY_PROFILE: 'acc2', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir },
+      nowMs: Date.parse('2026-11-21T03:45:00Z'),
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '2026-11-21T00:00:00Z' }),
+      queryOpenPrs: () => [],
+      queryOpenIssues: () => [],
+      sendMessage: () => { throw new Error('must not wake during backoff'); },
+      notify: (t, m) => { alerts.push({ t, m }); return true; },
+    });
+    assert.equal(alerts.length, 1, 'alert cooldown must suppress repeat macOS alerts within 4h');
+
+    // Once PO replies with a non-error PLANNER_RESPONSE, consecutiveUnansweredWakes resets to 0.
+    writeTranscript(poId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T01:00:00Z' },
+      { step_index: 2, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-21T02:00:00Z', content: 'Gatekeeper wake at 2026-11-21T02:00:00Z (reasons: restart).' },
+      { step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T04:00:00Z' },
+    ]);
+    assert.equal(inspectConversation(brainDir, poId, Date.parse('2026-11-21T04:30:00Z'), { turnStatusDir }).consecutiveUnansweredWakes, 0);
+
+    // Pre-held lockfile prevents duplicate wake (action.skipped === 'locked').
+    const pr = {
+      number: 77,
+      labels: [{ name: 'line:core' }],
+      mergeStateStatus: 'CLEAN',
+      reviewDecision: 'APPROVED',
+      headRefOid: 'abc999',
+      updatedAt: '2026-11-21T04:15:00Z',
+    };
+    const heldLock = acquirePoLock(lockDir, `DOS/Core-${poId}`, 120_000, Date.parse('2026-11-21T04:30:00Z'));
+    assert.equal(heldLock.acquired, true);
+    const sentLocked = [];
+    const lockedRes = runGatekeeper(cfgPath, {
+      env: { ANTIGRAVITY_PROFILE: 'acc2', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir },
+      nowMs: Date.parse('2026-11-21T04:30:00Z'),
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [pr],
+      queryOpenIssues: () => [],
+      sendMessage: (id, msg) => sentLocked.push({ id, msg }),
+    });
+    assert.equal(lockedRes.actions[0].skipped, 'locked');
+    assert.equal(sentLocked.length, 0);
+    releasePoLock(heldLock.lockPath);
+
+    // Now lock is released: PR #77 wakes PO and commits fingerprint to ANTIGRAVITY_EXECUTABLE_DATA_DIR/state.json.
+    const sent1 = [];
+    const wakeRes = runGatekeeper(cfgPath, {
+      env: { ANTIGRAVITY_PROFILE: 'acc2', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir },
+      nowMs: Date.parse('2026-11-21T04:31:00Z'),
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [pr],
+      queryOpenIssues: () => [],
+      sendMessage: (id, msg) => sent1.push({ id, msg }),
+    });
+    assert.equal(sent1.length, 1);
+    assert.match(sent1[0].msg, /reasons: pr-state-changed/);
+    assert.equal(wakeRes.status.actions[0].woke, true);
+
+    // PO answers the 04:31Z wake at 04:32Z; next pass 10m later with unchanged PR #77 is deduped via persisted state.json.
+    writeTranscript(poId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T04:00:00Z' },
+      { step_index: 2, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-21T04:31:00Z', content: 'Gatekeeper wake at 2026-11-21T04:31:00Z (reasons: pr-state-changed).' },
+      { step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T04:32:00Z' },
+    ]);
+    const sent2 = [];
+    const dedupeRes = runGatekeeper(cfgPath, {
+      env: { ANTIGRAVITY_PROFILE: 'acc2', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir },
+      nowMs: Date.parse('2026-11-21T04:41:00Z'),
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [pr],
+      queryOpenIssues: () => [],
+      sendMessage: (id, msg) => sent2.push({ id, msg }),
+    });
+    assert.equal(sent2.length, 0);
+    assert.equal(dedupeRes.actions[0].skipped, 'no-reason');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 2.18.0: Claude Desktop Thin Haiku Relay evaluator (claude-gatekeeper-eval.mjs).
+test('2.18.0 claude-gatekeeper-eval: programmatic and CLI Thin Haiku Relay evaluation', () => {
+  const parsed = parseClaudeEvalArgs([
+    '--repo', 'DOS/Core',
+    '--pos-json', '[]',
+    '--heartbeat-active', '180',
+    '--heartbeat-idle', '720',
+    '--owner', 'JOY',
+    '--json',
+  ]);
+  assert.equal(parsed.repo, 'DOS/Core');
+  assert.equal(parsed.heartbeatActiveMinutes, 180);
+  assert.equal(parsed.heartbeatIdleMinutes, 720);
+  assert.throws(() => parseClaudeEvalArgs(['--heartbeat-active', '0']), /positive integer/);
+  assert.throws(() => parseClaudeEvalArgs(['--unknown-flag']), /unknown option/);
+
+  const nowMs = Date.parse('2026-11-21T06:00:00Z');
+  const pos = [{ title: 'Core Product Owner', label: 'line:core', checkInFile: '~/.claude/po-state/dos-core-po-checkin.md' }];
+  const quietSessions = [{ id: 'sess-po-1', title: 'Core Product Owner', isRunning: false, lastActivityAt: '2026-11-21T05:30:00Z' }];
+
+  // No events -> empty wakeList.
+  const emptyRes = evaluateClaudeGatekeeper({
+    repo: 'DOS/Core',
+    pos,
+    sessions: quietSessions,
+    restartTimes: { bootTime: '2026-11-21T00:00:00Z', appStartTime: '2026-11-21T01:00:00Z' },
+    openPrs: [],
+    openIssues: [],
+    nowMs,
+  });
+  assert.equal(emptyRes.ok, true);
+  assert.deepEqual(emptyRes.wakeList, []);
+  assert.equal(emptyRes.skipped[0].reason, 'no-reason');
+
+  // pr-state-changed + restart populate wakeList with structured message.
+  const eventRes = evaluateClaudeGatekeeper({
+    repo: 'DOS/Core',
+    pos,
+    sessions: quietSessions,
+    restartTimes: { bootTime: '2026-11-21T00:00:00Z', appStartTime: '2026-11-21T05:45:00Z' },
+    openPrs: [{
+      number: 900,
+      labels: [{ name: 'line:core' }],
+      mergeStateStatus: 'CLEAN',
+      reviewDecision: 'APPROVED',
+      headRefOid: 'cafe001',
+      updatedAt: '2026-11-21T05:40:00Z',
+    }],
+    openIssues: [],
+    config: { owner: 'JOY', language: 'Vietnamese' },
+    nowMs,
+  });
+  assert.equal(eventRes.wakeList.length, 1);
+  assert.deepEqual(eventRes.wakeList[0].reasons, ['restart', 'pr-state-changed']);
+  assert.match(eventRes.wakeList[0].message, /Changed PRs: #900/);
+  assert.match(eventRes.wakeList[0].message, /Tell JOY in Vietnamese/);
+
+  // safety-heartbeat: 200m with no work does NOT wake; 730m idle DOES wake.
+  const hbIdle = evaluateClaudeGatekeeper({
+    repo: 'DOS/Core',
+    pos,
+    sessions: [{ id: 'sess-po-1', title: 'Core Product Owner', isRunning: false, lastActivityAt: '2026-11-20T17:50:00Z' }],
+    restartTimes: { bootTime: '2026-11-20T00:00:00Z', appStartTime: '' },
+    openPrs: [],
+    openIssues: [],
+    nowMs,
+  });
+  assert.equal(hbIdle.wakeList.length, 1);
+  assert.match(hbIdle.wakeList[0].reasons[0], /^safety-heartbeat \(idle, 730m\)$/);
+
+  // Programmatic runClaudeGatekeeperEval is read-only by default; only writes stateFile when commitState: true.
+  const dir = mkdtempSync(join(tmpdir(), 'claude-eval-'));
+  try {
+    const stateFile = join(dir, 'claude-state.json');
+    const pr = {
+      number: 901,
+      labels: [{ name: 'line:core' }],
+      mergeStateStatus: 'CLEAN',
+      headRefOid: 'deadbeef',
+      updatedAt: '2026-11-21T05:50:00Z',
+    };
+    const runReadOnly = runClaudeGatekeeperEval(
+      { repo: 'DOS/Core', pos, sessions: quietSessions, stateFile, heartbeatActiveMinutes: 180, heartbeatIdleMinutes: 720 },
+      { nowMs, getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '' }), queryOpenPrs: () => [pr], queryOpenIssues: () => [] },
+    );
+    assert.equal(runReadOnly.wakeList.length, 1);
+    assert.equal(existsSync(stateFile), false, 'read-only default must not write stateFile');
+
+    const run1 = runClaudeGatekeeperEval(
+      { repo: 'DOS/Core', pos, sessions: quietSessions, stateFile, commitState: true, heartbeatActiveMinutes: 180, heartbeatIdleMinutes: 720 },
+      { nowMs, getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '' }), queryOpenPrs: () => [pr], queryOpenIssues: () => [] },
+    );
+    assert.equal(run1.wakeList.length, 1);
+    assert.ok(existsSync(stateFile), 'commitState: true persists stateFile');
+
+    const run2 = runClaudeGatekeeperEval(
+      { repo: 'DOS/Core', pos, sessions: quietSessions, stateFile, commitState: true, heartbeatActiveMinutes: 180, heartbeatIdleMinutes: 720 },
+      { nowMs: nowMs + 10 * 60_000, getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '' }), queryOpenPrs: () => [pr], queryOpenIssues: () => [] },
+    );
+    assert.deepEqual(run2.wakeList, []);
+
+    // CLI integration test with a local temp `gh` shim (no network calls).
+    if (process.platform !== 'win32') {
+      const binDir = join(dir, 'bin');
+      mkdirSync(binDir, { recursive: true });
+      const ghShim = join(binDir, 'gh');
+      writeFileSync(ghShim, '#!/bin/sh\nif [ "$1" = "pr" ]; then echo "$MOCK_GH_PRS"; else echo "[]"; fi\n', 'utf8');
+      chmodSync(ghShim, 0o755);
+
+      const cliScript = join(root, 'plugins/cc-po/skills/product-owner/claude-gatekeeper-eval.mjs');
+      const futureIso = new Date(Date.now() + 60_000).toISOString();
+      const recentSessions = JSON.stringify([{ id: 'sess-po-cli', title: 'Core Product Owner', isRunning: false, lastActivityAt: futureIso }]);
+
+      const cliQuiet = spawnSync(
+        process.execPath,
+        [cliScript, '--repo', 'DOS/Core', '--pos-json', JSON.stringify(pos), '--sessions-json', recentSessions, '--json'],
+        { encoding: 'utf8', env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, MOCK_GH_PRS: '[]' } },
+      );
+      assert.equal(cliQuiet.status, 0, cliQuiet.stderr);
+      const quietJson = JSON.parse(cliQuiet.stdout);
+      assert.equal(quietJson.ok, true);
+      assert.deepEqual(quietJson.wakeList, []);
+
+      const pastIso = new Date(Date.now() - 20 * 60_000).toISOString();
+      const newerPrIso = new Date(Date.now() - 5 * 60_000).toISOString();
+      const mockPrs = JSON.stringify([{ number: 955, labels: [{ name: 'line:core' }], mergeStateStatus: 'CLEAN', headRefOid: 'aaa111', updatedAt: newerPrIso }]);
+      const staleSessions = JSON.stringify([{ id: 'sess-po-cli', title: 'Core Product Owner', isRunning: false, lastActivityAt: pastIso }]);
+      const cliWake = spawnSync(
+        process.execPath,
+        [cliScript, '--repo', 'DOS/Core', '--pos-json', JSON.stringify(pos), '--sessions-json', staleSessions, '--json'],
+        { encoding: 'utf8', env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, MOCK_GH_PRS: mockPrs } },
+      );
+      assert.equal(cliWake.status, 0, cliWake.stderr);
+      const wakeJson = JSON.parse(cliWake.stdout);
+      assert.equal(wakeJson.ok, true);
+      assert.equal(wakeJson.wakeList.length, 1);
+      assert.ok(wakeJson.wakeList[0].reasons.includes('pr-state-changed'));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 2.18.0: hooks/agy-turn-status.mjs & hooks/post-checkin-cap.mjs cross-host contracts and archive rotation.
+test('2.18.0 hooks: agy-turn-status.mjs and post-checkin-cap.mjs CLI, Antigravity/Claude stdin, and archive rotation', () => {
+  // agy-turn-status.mjs classification, event resolution, and path-traversal guards.
+  assert.equal(classifyTurnStatus({ status: 'completed' }), 'ok');
+  assert.equal(classifyTurnStatus({ error: 'tool execution failed' }), 'error');
+  assert.equal(classifyTurnStatus({ terminationReason: 'MAX_TOKEN_BUDGET_EXCEEDED' }), 'error');
+  assert.equal(classifyTurnStatus({ reason: 'request timed out' }), 'error');
+  assert.equal(classifyTurnStatus({ error: { code: 429, message: 'RESOURCE_EXHAUSTED quota' } }), 'quota');
+  assert.equal(classifyTurnStatus({ terminationReason: 'rate_limit reached' }), 'quota');
+  assert.equal(resolveEventName({ hookEventName: 'Stop' }), 'Stop');
+  assert.equal(resolveEventName({ terminationReason: 'completed' }), 'Stop');
+  assert.equal(resolveEventName({ hookEventName: 'PostInvocation' }), 'PostInvocation');
+
+  assert.equal(extractConversationId({ conversation_id: '../etc/passwd' }, {}), null);
+  assert.equal(extractConversationId({ conversation_id: 'foo/bar' }, {}), null);
+  assert.equal(extractConversationId({ conversation_id: '..' }, {}), null);
+  assert.equal(extractConversationId({ conversation_id: 'has space' }, {}), null);
+  assert.equal(extractConversationId({}, { ANTIGRAVITY_CONVERSATION_ID: 'conv-env-123' }), 'conv-env-123');
+
+  const dir = mkdtempSync(join(tmpdir(), 'ccpo-v218-hooks-'));
+  try {
+    const statusDir = join(dir, 'turn-status');
+    const rec = recordTurnStatus(
+      { conversationId: 'conv-abc-1', hookEventName: 'Stop', error: '429 quota exhausted' },
+      { dir: statusDir, now: '2026-11-21T07:00:00Z' },
+    );
+    assert.ok(rec && existsSync(rec.filePath));
+    const saved = JSON.parse(readFileSync(rec.filePath, 'utf8'));
+    assert.deepEqual(saved, {
+      conversationId: 'conv-abc-1',
+      status: 'quota',
+      updatedAt: '2026-11-21T07:00:00.000Z',
+      event: 'Stop',
+    });
+    assert.deepEqual(runAgyTurnStatusHook('{invalid json', { dir: statusDir }), {});
+
+    // Subprocess fail-open check for agy-turn-status.mjs (valid, malformed, empty stdin all exit 0 and print {}).
+    const turnScript = join(root, 'plugins/cc-po/hooks/agy-turn-status.mjs');
+    for (const stdinText of [
+      JSON.stringify({ conversation_id: 'conv-cli-2', hookEventName: 'PostInvocation', status: 'ok' }),
+      'not valid json{',
+      '',
+    ]) {
+      const sub = spawnSync(process.execPath, [turnScript], {
+        input: stdinText,
+        encoding: 'utf8',
+        env: { ...process.env, CC_PO_TURN_STATUS_DIR: statusDir },
+      });
+      assert.equal(sub.status, 0, sub.stderr);
+      assert.deepEqual(JSON.parse(sub.stdout), {});
+    }
+    assert.equal(JSON.parse(readFileSync(join(statusDir, 'conv-cli-2.json'), 'utf8')).status, 'ok');
+
+    // post-checkin-cap.mjs: CLI --file + --dry-run, dated sections + bloated chronological Live state -> archive rotation.
+    const capScript = join(root, 'plugins/cc-po/hooks/post-checkin-cap.mjs');
+    const checkInPath = join(dir, 'dos-core-api-po-checkin.md');
+    const archivePath = getArchivePath(checkInPath);
+    const oldDatedBody = Array.from({ length: 60 }, (_, i) => `- 2026-11-01T0${i % 9}:00Z handled old event #${i} with full details`).join('\n');
+    const newerDatedBody = Array.from({ length: 20 }, (_, i) => `- 2026-11-15T0${i % 9}:00Z reviewed sprint item #${i} completed`).join('\n');
+    const bloatedChronoLive = Array.from({ length: 100 }, (_, i) => `- 2026-11-10T${String(i % 24).padStart(2, '0')}:00Z sync note #${i} completed cleanly`).join('\n');
+    const richCheckIn = [
+      '# Core API PO check-in',
+      '',
+      'Session: `11111111-2222-3333-4444-555555555555`',
+      '',
+      '## On every wake',
+      '1. Keep check-in concise and review ready PRs.',
+      '2. Never spawn a CronCreate loop.',
+      '',
+      '## Waiting on',
+      '- Waiting on JOY approval for migration #999',
+      '',
+      '## 2026-11-01 Historical Log',
+      oldDatedBody,
+      '',
+      '## 2026-11-15 Recent Log',
+      newerDatedBody,
+      '',
+      '## Live state',
+      bloatedChronoLive,
+      '- Active PR #888 in-flight waiting for CI checks',
+      '',
+    ].join('\n');
+    writeFileSync(checkInPath, richCheckIn, 'utf8');
+    assert.ok(Buffer.byteLength(richCheckIn, 'utf8') > CHECKIN_CAP_BYTES);
+
+    // CLI --dry-run reports compaction without modifying disk or writing archive.
+    const dryCli = spawnSync(process.execPath, [capScript, '--file', checkInPath, '--dry-run', '--json'], { encoding: 'utf8' });
+    assert.equal(dryCli.status, 0, dryCli.stderr);
+    const drySummary = JSON.parse(dryCli.stdout);
+    assert.equal(drySummary.dryRun, true);
+    assert.equal(drySummary.status, 'compacted');
+    assert.ok(drySummary.afterBytes <= CHECKIN_CAP_BYTES);
+    assert.equal(readFileSync(checkInPath, 'utf8'), richCheckIn, '--dry-run must not modify check-in file');
+    assert.equal(existsSync(archivePath), false, '--dry-run must not create archive file');
+
+    // CLI live run rotates safely to *-archive.md while preserving header, On every wake, Waiting on, and active Live state.
+    const liveCli = spawnSync(process.execPath, [capScript, '--file', checkInPath, '--json'], { encoding: 'utf8' });
+    assert.equal(liveCli.status, 0, liveCli.stderr);
+    const liveSummary = JSON.parse(liveCli.stdout);
+    assert.equal(liveSummary.status, 'compacted');
+    assert.ok(liveSummary.afterBytes <= CHECKIN_CAP_BYTES);
+    const compactedText = readFileSync(checkInPath, 'utf8');
+    assert.ok(Buffer.byteLength(compactedText, 'utf8') <= CHECKIN_CAP_BYTES);
+    assert.match(compactedText, /## On every wake/);
+    assert.match(compactedText, /Waiting on JOY approval for migration #999/);
+    assert.match(compactedText, /Active PR #888 in-flight waiting for CI checks/);
+    assert.ok(existsSync(archivePath));
+    const archiveText = readFileSync(archivePath, 'utf8');
+    assert.match(archiveText, /^## Archived \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/m);
+    assert.match(archiveText, /## 2026-11-01 Historical Log/);
+
+    // Antigravity PostToolUse stdin contract: returns {} and exits 0 while compacting on disk.
+    writeFileSync(checkInPath, richCheckIn, 'utf8');
+    const agyPayload = {
+      hookEventName: 'PostToolUse',
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      toolCall: { name: 'write_file', args: { Path: checkInPath } },
+    };
+    assert.equal(isAntigravityPayload(agyPayload), true);
+    const agySub = spawnSync(process.execPath, [capScript], {
+      input: JSON.stringify(agyPayload),
+      encoding: 'utf8',
+    });
+    assert.equal(agySub.status, 0, agySub.stderr);
+    assert.deepEqual(JSON.parse(agySub.stdout), {});
+    assert.ok(Buffer.byteLength(readFileSync(checkInPath, 'utf8'), 'utf8') <= CHECKIN_CAP_BYTES);
+
+    // Malformed stdin fails open (exit 0, no crash).
+    const badSub = spawnSync(process.execPath, [capScript], { input: '{malformed', encoding: 'utf8' });
+    assert.equal(badSub.status, 0);
+
+    // Purely active-only file > 6144 bytes is never truncated and creates no archive.
+    const activeOnlyPath = join(dir, 'dos-core-active-po-checkin.md');
+    const activeOnlyText = `# Active PO check-in\n\n## On every wake\n1. Check PRs.\n\n## Live state\n${
+      Array.from({ length: 130 }, (_, i) => `- Active PR #${9000 + i} in-progress waiting for owner review item ${i}`).join('\n')
+    }\n`;
+    writeFileSync(activeOnlyPath, activeOnlyText, 'utf8');
+    const activeRes = enforceCheckInCap(activeOnlyPath);
+    assert.equal(activeRes.status, 'warning');
+    assert.equal(activeRes.changed, false);
+    assert.equal(readFileSync(activeOnlyPath, 'utf8'), activeOnlyText);
+    assert.equal(existsSync(getArchivePath(activeOnlyPath)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 2.18.0: new config keys validation, backwards compatibility, and documentation invariants.
+test('2.18.0 config keys (heartbeats, cron, context compact tokens) and documentation invariants', () => {
+  const check = (extra) => checkConfig(minimal.replace('- project_id: PVT_example', `- project_id: PVT_example\n${extra}`));
+  const err = (extra) => check(extra).errors.join('\n');
+  const clean = { errors: [], warnings: [] };
+
+  // All 4 new keys are in KNOWN.
+  for (const key of [
+    'gatekeeper_heartbeat_active_minutes',
+    'gatekeeper_heartbeat_idle_minutes',
+    'gatekeeper_cron_minutes',
+    'po_context_compact_tokens',
+  ]) {
+    assert.ok(KNOWN.has(key), `${key} must be in KNOWN`);
+  }
+
+  // Valid values + optional parenthesized notes.
+  assert.deepEqual(check([
+    '- gatekeeper_heartbeat_active_minutes: 180 (owner, 2026-11-21)',
+    '- gatekeeper_heartbeat_idle_minutes: 720',
+    '- gatekeeper_cron_minutes: 10 (Antigravity sidecar)',
+    '- po_context_compact_tokens: 120000',
+  ].join('\n')), clean);
+  assert.deepEqual(check('- po_context_compact_tokens: none'), clean);
+  assert.deepEqual(check('- po_context_compact_tokens: `100000`'), clean);
+  assert.deepEqual(check('- gatekeeper_cron_minutes: 1'), clean);
+  assert.deepEqual(check('- gatekeeper_cron_minutes: 60'), clean);
+
+  // Backwards compatibility: legacy gatekeeper_active_minutes still validates cleanly.
+  assert.deepEqual(check('- gatekeeper_active_minutes: 60'), clean);
+
+  // Invalid values report exact errors.
+  for (const bad of ['0', '-10', '1.5', '180m', 'none', 'three']) {
+    assert.match(err(`- gatekeeper_heartbeat_active_minutes: ${bad}`), /gatekeeper_heartbeat_active_minutes must start with a positive integer/, bad);
+    assert.match(err(`- gatekeeper_heartbeat_idle_minutes: ${bad}`), /gatekeeper_heartbeat_idle_minutes must start with a positive integer/, bad);
+  }
+  for (const bad of ['0', '61', '-5', '10.5', '10m', 'none', 'ten']) {
+    assert.match(err(`- gatekeeper_cron_minutes: ${bad}`), /gatekeeper_cron_minutes must start with an integer from 1 to 60/, bad);
+  }
+  for (const bad of ['0', '-50000', '120k', '120.5', 'soon']) {
+    assert.match(err(`- po_context_compact_tokens: ${bad}`), /po_context_compact_tokens must start with a positive integer or be none/, bad);
+  }
+
+  // Schema & documentation invariants for v2.18.0.
+  const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
+  assert.match(schema, /\| `gatekeeper_heartbeat_active_minutes` \| `180` \|/);
+  assert.match(schema, /\| `gatekeeper_heartbeat_idle_minutes` \| `720` \|/);
+  assert.match(schema, /\| `gatekeeper_cron_minutes` \| `10` \(Antigravity\) \/ `30` \(Claude Desktop\) \|/);
+  assert.match(schema, /\| `po_context_compact_tokens` \| `none` \|/);
+
+  const wakeUps = flatten(read('plugins/cc-po/skills/product-owner/references/wake-ups.md').replace(/\r\n/g, '\n'));
+  assert.match(wakeUps, /gatekeeper-core\.mjs/);
+  assert.match(wakeUps, /claude-gatekeeper-eval\.mjs/);
+  assert.match(wakeUps, /Profile Affinity Guard/);
+  assert.match(wakeUps, /lastPlannerMs/);
+  assert.match(wakeUps, /`Monitor` tool.*<= 1h/);
+  assert.match(wakeUps, /`--channels`.*CLI-only/);
+  assert.match(wakeUps, /Cloud Routines/);
+
+  const template = flatten(read('plugins/cc-po/skills/product-owner/gatekeeper-template.md').replace(/\r\n/g, '\n'));
+  assert.match(template, /Thin Haiku Relay/);
+  assert.match(template, /claude-gatekeeper-eval\.mjs/);
+  assert.match(template, /<heartbeat active minutes>/);
+  assert.match(template, /<heartbeat idle minutes>/);
+
+  const agyHost = flatten(read('plugins/cc-po/skills/product-owner/references/antigravity-host.md').replace(/\r\n/g, '\n'));
+  assert.match(agyHost, /gatekeeper-core\.mjs/);
+  assert.match(agyHost, /agy-turn-status\.mjs/);
+  assert.match(agyHost, /hooks\.json/);
+  assert.match(agyHost, /\/compact/);
+});
+
+// 2.18.0 Red Team regressions (MUST-FIX #1, #2, #3, #4, #7 & SHOULD-FIX #2, #3).
+test('2.18.0 Red Team regressions: SYSTEM_MESSAGE wrapper backoff, 3-step subagent send_message, subagent quota probe cap, execDataDir affinity, isMultiSignalMode, TOCTOU lock token, and PR self-echo guard', () => {
+  // MUST-FIX #1: real Antigravity <SYSTEM_MESSAGE> wrapper matches isGatekeeperWakeText and drives 1h->2h->4h backoff.
+  const wrappedWake = (ts) => [
+    'The following is a <SYSTEM_MESSAGE> not actually sent by the user.',
+    '',
+    '<SYSTEM_MESSAGE>',
+    `[Message] timestamp=${ts} sender=system priority=MESSAGE_PRIORITY_HIGH content=Gatekeeper wake at ${ts} (reasons: restart). Ready PRs of your line: none.`,
+    '</SYSTEM_MESSAGE>',
+  ].join('\n');
+  assert.equal(isGatekeeperWakeText(wrappedWake('2026-11-21T02:00:00Z'), 'SYSTEM_MESSAGE'), true);
+  assert.equal(isGatekeeperWakeText(wrappedWake('2026-11-21T02:00:00Z'), 'USER_INPUT'), false);
+  assert.equal(isGatekeeperWakeText('Gatekeeper wake at 2026-11-21T02:00:00Z (reasons: restart).', 'USER_INPUT'), true);
+
+  const dir = mkdtempSync(join(tmpdir(), 'ccpo-redteam-core-'));
+  try {
+    const brainDirAcc3 = join(dir, 'Antigravity Profiles', 'acc3', 'gemini', 'antigravityprofileacc3', 'brain');
+    const execDataAcc2 = join(dir, 'Antigravity Profiles', 'acc2', 'gemini', 'antigravityprofileacc2', 'sidecar_data', 'gk');
+    const lockDir = join(dir, 'locks');
+    const poId = '11111111-aaaa-bbbb-cccc-111111111111';
+    const subId = '22222222-aaaa-bbbb-cccc-222222222222';
+
+    const writeTranscript = (brain, id, steps) => {
+      const logDir = join(brain, id, '.system_generated', 'logs');
+      mkdirSync(logDir, { recursive: true });
+      const file = join(logDir, 'transcript.jsonl');
+      writeFileSync(file, `${steps.map((s) => JSON.stringify(s)).join('\n')}\n`, 'utf8');
+      const dt = new Date(steps[steps.length - 1].created_at);
+      utimesSync(file, dt, dt);
+    };
+
+    writeTranscript(brainDirAcc3, poId, [
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T01:00:00Z' },
+      { step_index: 2, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-21T02:00:00Z', content: wrappedWake('2026-11-21T02:00:00Z') },
+      { step_index: 3, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-21T03:05:00Z', content: wrappedWake('2026-11-21T03:05:00Z') },
+    ]);
+    const poInsp = inspectConversation(brainDirAcc3, poId, Date.parse('2026-11-21T04:00:00Z'), { readTurnStatus: false });
+    assert.equal(poInsp.lastPlannerMs, Date.parse('2026-11-21T01:00:00Z'));
+    assert.equal(poInsp.consecutiveUnansweredWakes, 2);
+    assert.equal(poInsp.lastWakeAtMs, Date.parse('2026-11-21T03:05:00Z'));
+
+    // With 2 unanswered wrapped wakes, required backoff is 2h (120m): 55m after last wake -> skipped: 'backoff'.
+    const backoffEval = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: poInsp,
+      restartTimes: { bootTime: '2026-11-21T01:30:00Z', appStartTime: '' },
+      openPrs: [],
+      openIssues: [],
+      nowMs: Date.parse('2026-11-21T04:00:00Z'),
+      multiSignal: true,
+    });
+    assert.equal(backoffEval.shouldWake, false);
+    assert.equal(backoffEval.skipped, 'backoff');
+    assert.equal(backoffEval.shouldAlertBackoff, true);
+
+    // MUST-FIX #2: real 3-step subagent turn (PLANNER_RESPONSE(send_message) -> GENERIC:DONE -> PLANNER_RESPONSE:DONE at t2 > t0).
+    writeTranscript(brainDirAcc3, subId, [
+      { step_index: 1, type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-21T01:00:00Z', content: 'Implement #101' },
+      { step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T01:10:00Z', tool_calls: [{ name: 'send_message', args: { content: '"Done PR #101"' } }] },
+      { step_index: 3, type: 'GENERIC', status: 'DONE', created_at: '2026-11-21T01:10:01Z', content: 'Message delivered.' },
+      { step_index: 4, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T01:10:05Z', content: 'Reported back to PO.' },
+    ]);
+    const subInsp = inspectConversation(brainDirAcc3, subId, Date.parse('2026-11-21T02:00:00Z'), { readTurnStatus: false });
+    assert.equal(subInsp.sentMessageToPoAfterLastTurn, true, '3-step send_message turn must stay true even when closing PLANNER_RESPONSE has later timestamp');
+
+    const noFalseStall = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: { conversationId: poId, isRunning: false, lastPlannerMs: Date.parse('2026-11-21T01:00:00Z'), consecutiveUnansweredWakes: 0 },
+      subSessions: [{ ...subInsp, role: '#101 worker' }],
+      openPrs: [],
+      openIssues: [],
+      nowMs: Date.parse('2026-11-21T02:00:00Z'),
+      multiSignal: true,
+    });
+    assert.equal(noFalseStall.shouldWake, false, 'subagent that already called send_message must not false-stall after 30m');
+
+    // A new USER_INPUT without send_message resets sentMessageToPoAfterLastTurn back to false.
+    writeTranscript(brainDirAcc3, subId, [
+      { step_index: 1, type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-21T01:00:00Z', content: 'Implement #101' },
+      { step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T01:10:00Z', tool_calls: [{ name: 'send_message', args: {} }] },
+      { step_index: 3, type: 'GENERIC', status: 'DONE', created_at: '2026-11-21T01:10:01Z', content: 'Delivered' },
+      { step_index: 4, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T01:10:05Z', content: 'Done' },
+      { step_index: 5, type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-21T02:00:00Z', content: 'Follow-up task' },
+      { step_index: 6, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-21T02:05:00Z', content: 'Stopped without reporting' },
+    ]);
+    assert.equal(
+      inspectConversation(brainDirAcc3, subId, Date.parse('2026-11-21T02:45:00Z'), { readTurnStatus: false }).sentMessageToPoAfterLastTurn,
+      false,
+    );
+
+    // MUST-FIX #3: subagent-only quota backoff 30m -> 60m -> 120m + cap 3 + no infinite 30m loop after PO runs.
+    const tErr = Date.parse('2026-11-21T01:10:00Z');
+    const poBase = { conversationId: poId, isRunning: false, lastPlannerMs: Date.parse('2026-11-21T01:00:00Z'), consecutiveUnansweredWakes: 0 };
+    const quotaSub = { conversationId: subId, role: '#101 worker', isRunning: false, lastActivityMs: tErr, lastTurnStatus: 'quota', sentMessageToPoAfterLastTurn: true };
+
+    // Probe 1 at +30m (01:40) -> fires (probeWaitMinutes: 30, probeCount: 1).
+    const q1 = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: poBase,
+      subSessions: [quotaSub],
+      openPrs: [],
+      openIssues: [],
+      prevPoState: { subagentAlertedAt: { [subId]: tErr } },
+      nowMs: tErr + 30 * 60_000,
+      multiSignal: true,
+    });
+    assert.deepEqual(q1.reasons, ['quota-recovery-probe']);
+    assert.equal(q1.signals.quotaRecoveryProbe.source, 'subagent');
+    assert.equal(q1.signals.quotaRecoveryProbe.probeWaitMinutes, 30);
+    assert.equal(q1.signals.quotaRecoveryProbe.probeCount, 1);
+
+    // 30m after Probe 1 -> suppressed (must wait 60m for Probe 2).
+    const q1Wait = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: poBase,
+      subSessions: [quotaSub],
+      openPrs: [],
+      openIssues: [],
+      prevPoState: { ...q1.nextPoState, subagentAlertedAt: { [subId]: tErr + 30 * 60_000 } },
+      nowMs: tErr + 60 * 60_000,
+      multiSignal: true,
+    });
+    assert.equal(q1Wait.shouldWake, false);
+
+    // Probe 2 at +60m after Probe 1 (tErr + 90m) -> fires (probeWaitMinutes: 60, probeCount: 2).
+    const q2 = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: poBase,
+      subSessions: [quotaSub],
+      openPrs: [],
+      openIssues: [],
+      prevPoState: { ...q1.nextPoState, subagentAlertedAt: { [subId]: tErr + 30 * 60_000 } },
+      nowMs: tErr + 90 * 60_000,
+      multiSignal: true,
+    });
+    assert.deepEqual(q2.reasons, ['quota-recovery-probe']);
+    assert.equal(q2.signals.quotaRecoveryProbe.probeWaitMinutes, 60);
+    assert.equal(q2.signals.quotaRecoveryProbe.probeCount, 2);
+
+    // Probe 3 at +120m after Probe 2 (tErr + 210m) -> fires (probeWaitMinutes: 120, probeCount: 3; use high heartbeat to isolate).
+    const q3 = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: poBase,
+      subSessions: [quotaSub],
+      openPrs: [],
+      openIssues: [],
+      prevPoState: { ...q2.nextPoState, subagentAlertedAt: { [subId]: tErr + 180 * 60_000 } },
+      config: { heartbeatActiveMinutes: 600 },
+      nowMs: tErr + 210 * 60_000,
+      multiSignal: true,
+    });
+    assert.deepEqual(q3.reasons, ['quota-recovery-probe']);
+    assert.equal(q3.signals.quotaRecoveryProbe.probeWaitMinutes, 120);
+    assert.equal(q3.signals.quotaRecoveryProbe.probeCount, 3);
+
+    // After 3 probes (cap reached), NO 4th quota-recovery-probe fires even 150m later.
+    const qCap = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: poBase,
+      subSessions: [quotaSub],
+      openPrs: [],
+      openIssues: [],
+      prevPoState: { ...q3.nextPoState, subagentAlertedAt: { [subId]: tErr + 300 * 60_000 } },
+      config: { heartbeatActiveMinutes: 600 },
+      nowMs: tErr + 360 * 60_000,
+      multiSignal: true,
+    });
+    assert.equal(qCap.shouldWake, false, 'subagent quota probe must cap at 3 probes');
+
+    // Once PO has acted AFTER tErr (lastPlannerMs > tErr), subagent quota error is no longer fresh -> no 30m loop.
+    const qAfterPoActed = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: { ...poBase, lastPlannerMs: tErr + 5 * 60_000 },
+      subSessions: [quotaSub],
+      openPrs: [],
+      openIssues: [],
+      prevPoState: q1.nextPoState,
+      nowMs: tErr + 45 * 60_000,
+      multiSignal: true,
+    });
+    assert.equal(qAfterPoActed.shouldWake, false);
+    assert.equal(qAfterPoActed.nextPoState.subagentQuotaProbe, null);
+
+    // MUST-FIX #4: Profile Affinity Guard detects mismatch via ANTIGRAVITY_EXECUTABLE_DATA_DIR even when script is shared.
+    const sharedScript = '/Users/JOY/.gemini/config/plugins/cc-po/skills/product-owner/agy-gatekeeper.mjs';
+    const aff = checkProfileAffinity({
+      envProfile: '',
+      appDataDir: '',
+      execDataDir: execDataAcc2,
+      brainDir: brainDirAcc3,
+      scriptPath: sharedScript,
+    });
+    assert.equal(aff.ok, false);
+    assert.equal(aff.sidecarProfile, 'acc2');
+    assert.equal(aff.targetProfile, 'acc3');
+
+    const cfgAcc3 = join(dir, 'gk-acc3.json');
+    writeFileSync(cfgAcc3, JSON.stringify({
+      repo: 'DOS/Core',
+      owner: 'JOY',
+      brainDir: brainDirAcc3,
+      pos: [{ title: 'Core PO', conversationId: poId, label: 'line:core' }],
+    }), 'utf8');
+    const sentExecMismatch = [];
+    const execMismatchRes = runGatekeeper(cfgAcc3, {
+      env: { ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataAcc2 },
+      scriptPath: sharedScript,
+      nowMs: Date.parse('2026-11-21T04:00:00Z'),
+      getRestartTimes: () => ({ bootTime: '', appStartTime: '' }),
+      queryOpenPrs: () => [],
+      queryOpenIssues: () => [],
+      sendMessage: (id, msg) => sentExecMismatch.push({ id, msg }),
+    });
+    assert.equal(execMismatchRes.status.skipped, 'profile-mismatch');
+    assert.equal(sentExecMismatch.length, 0);
+
+    // MUST-FIX #7: isMultiSignalMode() stays consistent across --dry-run, Run 1, and Run 2.
+    assert.equal(isMultiSignalMode({ activeMinutes: 60 }, { hasPrevState: false, hasOpenIssues: false }), true);
+    assert.equal(isMultiSignalMode({ activeMinutes: 60 }, { hasPrevState: true, hasOpenIssues: true }), true);
+    assert.equal(isMultiSignalMode({ activeMinutes: 60, multiSignal: false }, { hasPrevState: true, hasOpenIssues: true }), false);
+    assert.equal(isMultiSignalMode({ activeMinutes: 60 }, { legacyMode: true }), false);
+
+    // SHOULD-FIX #2: Lockfile TOCTOU owner token prevents releasing another owner's lock.
+    const tLock = Date.parse('2026-11-21T05:00:00Z');
+    const ownedLock = acquirePoLock(lockDir, 'dos/core-toctou', 120_000, tLock);
+    assert.equal(ownedLock.acquired, true);
+    assert.ok(typeof ownedLock.token === 'string' && ownedLock.token.length >= 16);
+    assert.equal(releasePoLock(ownedLock.lockPath, 'wrong-owner-token'), false, 'wrong token must not release lock');
+    assert.ok(existsSync(ownedLock.lockPath), 'lockfile must still exist after wrong-token release');
+    assert.equal(releasePoLock(ownedLock), true, 'correct owner lock object releases lock');
+    assert.equal(existsSync(ownedLock.lockPath), false);
+
+    // SHOULD-FIX #3: pr-state-changed does NOT self-echo when PO itself commented on PR before lastPlannerMs.
+    const tEval0 = Date.parse('2026-11-21T05:00:00Z');
+    const tPoComment = Date.parse('2026-11-21T05:05:00Z');
+    const tPoEnd = Date.parse('2026-11-21T05:06:00Z');
+    const prBefore = {
+      number: 700,
+      labels: [{ name: 'line:core' }],
+      mergeStateStatus: 'CLEAN',
+      reviewDecision: 'APPROVED',
+      headRefOid: 'sha111',
+      updatedAt: '2026-11-21T04:55:00Z',
+      statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }],
+      comments: [{ author: { login: 'dev' }, createdAt: '2026-11-21T04:55:00Z', body: 'ready' }],
+    };
+    const prSelfEcho = {
+      ...prBefore,
+      updatedAt: new Date(tPoComment).toISOString(),
+      comments: [
+        ...prBefore.comments,
+        { author: { login: 'po-bot' }, createdAt: new Date(tPoComment).toISOString(), body: 'PO acceptance: merge at sha111' },
+      ],
+    };
+    const prevStateBeforeEcho = {
+      prFingerprints: { '700': buildPrFingerprint(prBefore) },
+      lastEvaluatedAtMs: tEval0,
+    };
+    const selfEchoEval = evaluateSignals({
+      po: { title: 'Core PO', label: 'line:core' },
+      session: { conversationId: poId, isRunning: false, lastPlannerMs: tPoEnd, consecutiveUnansweredWakes: 0 },
+      openPrs: [prSelfEcho],
+      openIssues: [],
+      prevPoState: prevStateBeforeEcho,
+      nowMs: Date.parse('2026-11-21T05:10:00Z'),
+      multiSignal: true,
+    });
+    assert.equal(selfEchoEval.shouldWake, false, 'PO self-comment before lastPlannerMs with unchanged structural PR state must not self-echo');
+    assert.equal(selfEchoEval.skipped, 'no-reason');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 2.18.0 Red Team regressions (MUST-FIX #6: claude-gatekeeper-eval stdin quoting, archived filter, ambiguous-session, no silent stall, --commit-state).
+test('2.18.0 Red Team regressions: claude-gatekeeper-eval --sessions-stdin with quotes, archived filter, ambiguous-session, read-only default, and no silent stall', () => {
+  const nowMs = Date.parse('2026-11-21T06:00:00Z');
+  const posQuoted = [{ title: "JOY's Core PO", label: 'line:core', checkInFile: '~/.claude/po-state/core-po-checkin.md' }];
+
+  // Archived duplicate title is filtered out, leaving the single active PO session.
+  const archivedFiltered = evaluateClaudeGatekeeper({
+    repo: 'DOS/Core',
+    pos: posQuoted,
+    sessions: [
+      { id: 'sess-old', title: "JOY's Core PO", archived: true, isRunning: false, lastActivityAt: '2026-11-20T01:00:00Z' },
+      { id: 'sess-live', title: "JOY's Core PO", archived: false, isRunning: false, lastActivityAt: '2026-11-21T05:45:00Z' },
+    ],
+    restartTimes: { bootTime: '2026-11-21T00:00:00Z', appStartTime: '' },
+    openPrs: [],
+    openIssues: [],
+    nowMs,
+  });
+  assert.deepEqual(archivedFiltered.wakeList, []);
+  assert.equal(archivedFiltered.skipped[0].sessionId, 'sess-live');
+  assert.equal(archivedFiltered.skipped[0].reason, 'no-reason');
+
+  // Two active non-archived sessions with identical title -> skipped as 'ambiguous-session'.
+  const ambiguous = evaluateClaudeGatekeeper({
+    repo: 'DOS/Core',
+    pos: posQuoted,
+    sessions: [
+      { id: 'sess-a', title: "JOY's Core PO", archived: false, isRunning: false, lastActivityAt: '2026-11-21T05:45:00Z' },
+      { id: 'sess-b', title: "JOY's Core PO", archived: false, isRunning: false, lastActivityAt: '2026-11-21T05:40:00Z' },
+    ],
+    restartTimes: { bootTime: '2026-11-21T00:00:00Z', appStartTime: '' },
+    openPrs: [],
+    openIssues: [],
+    nowMs,
+  });
+  assert.deepEqual(ambiguous.wakeList, []);
+  assert.equal(ambiguous.skipped[0].reason, 'ambiguous-session');
+  assert.deepEqual(ambiguous.skipped[0].matchedSessionIds, ['sess-a', 'sess-b']);
+
+  // No silent subagent stall in Claude list_sessions mode when sub-session has no error/waiting signal.
+  const noSilentStall = evaluateClaudeGatekeeper({
+    repo: 'DOS/Core',
+    pos: posQuoted,
+    sessions: [
+      { id: 'sess-live', title: "JOY's Core PO", archived: false, isRunning: false, lastActivityAt: '2026-11-21T05:00:00Z' },
+      { id: 'sub-idle', title: '#42 worker', startedBy: 'sess-live', archived: false, isRunning: false, lastActivityAt: '2026-11-21T05:10:00Z' },
+    ],
+    restartTimes: { bootTime: '2026-11-21T00:00:00Z', appStartTime: '' },
+    openPrs: [],
+    openIssues: [],
+    nowMs,
+  });
+  assert.deepEqual(noSilentStall.wakeList, [], 'idle Claude sub-session without error/waiting must not trigger false stall');
+
+  // Programmatic --sessions-stdin with single-quote title + read-only vs commitState.
+  const parsedFlags = parseClaudeEvalArgs(['--repo', 'DOS/Core', '--sessions-stdin', '--commit-state']);
+  assert.equal(parsedFlags.sessionsStdin, true);
+  assert.equal(parsedFlags.commitState, true);
+
+  const stdinPayload = JSON.stringify({
+    pos: posQuoted,
+    sessions: [{ id: 'sess-live', title: "JOY's Core PO", archived: false, isRunning: false, lastActivityAt: '2026-11-21T05:40:00Z' }],
+  });
+  const fromStdin = runClaudeGatekeeperEval(
+    { repo: 'DOS/Core', sessionsStdin: true },
+    {
+      nowMs,
+      stdinText: stdinPayload,
+      getRestartTimes: () => ({ bootTime: '2026-11-21T00:00:00Z', appStartTime: '' }),
+      queryOpenPrs: () => [{ number: 808, labels: [{ name: 'line:core' }], mergeStateStatus: 'CLEAN', headRefOid: 'fff111', updatedAt: '2026-11-21T05:50:00Z' }],
+      queryOpenIssues: () => [],
+    },
+  );
+  assert.equal(fromStdin.wakeList.length, 1);
+  assert.equal(fromStdin.wakeList[0].title, "JOY's Core PO");
+  assert.deepEqual(fromStdin.wakeList[0].reasons, ['pr-state-changed']);
+
+  // CLI subprocess --sessions-stdin with single quotes + read-only default vs --commit-state.
+  if (process.platform !== 'win32') {
+    const dir = mkdtempSync(join(tmpdir(), 'ccpo-claude-stdin-'));
+    try {
+      const binDir = join(dir, 'bin');
+      mkdirSync(binDir, { recursive: true });
+      const ghShim = join(binDir, 'gh');
+      writeFileSync(ghShim, '#!/bin/sh\nif [ "$1" = "pr" ]; then echo "$MOCK_GH_PRS"; else echo "[]"; fi\n', 'utf8');
+      chmodSync(ghShim, 0o755);
+
+      const cliScript = join(root, 'plugins/cc-po/skills/product-owner/claude-gatekeeper-eval.mjs');
+      const statePath = join(dir, 'state.json');
+      const pastIso = new Date(Date.now() - 20 * 60_000).toISOString();
+      const prIso = new Date(Date.now() - 5 * 60_000).toISOString();
+      const stdinJson = JSON.stringify({
+        pos: posQuoted,
+        sessions: [{ id: 'sess-cli-quote', title: "JOY's Core PO", archived: false, isRunning: false, lastActivityAt: pastIso }],
+      });
+      const mockPrs = JSON.stringify([{ number: 809, labels: [{ name: 'line:core' }], mergeStateStatus: 'CLEAN', headRefOid: 'eee222', updatedAt: prIso }]);
+      const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, MOCK_GH_PRS: mockPrs };
+
+      // Without --commit-state: read-only, does NOT create statePath.
+      const ro = spawnSync(process.execPath, [cliScript, '--repo', 'DOS/Core', '--sessions-stdin', '--state-file', statePath, '--json'], {
+        input: stdinJson,
+        encoding: 'utf8',
+        env,
+      });
+      assert.equal(ro.status, 0, ro.stderr);
+      const roOut = JSON.parse(ro.stdout);
+      assert.equal(roOut.wakeList.length, 1);
+      assert.equal(roOut.wakeList[0].title, "JOY's Core PO");
+      assert.equal(existsSync(statePath), false, 'CLI without --commit-state must stay read-only');
+
+      // With --commit-state: writes statePath.
+      const rw = spawnSync(process.execPath, [cliScript, '--repo', 'DOS/Core', '--sessions-stdin', '--state-file', statePath, '--commit-state', '--json'], {
+        input: stdinJson,
+        encoding: 'utf8',
+        env,
+      });
+      assert.equal(rw.status, 0, rw.stderr);
+      assert.equal(existsSync(statePath), true, 'CLI with --commit-state must write statePath');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+// 2.18.0 Red Team regressions (MUST-FIX #5 & SHOULD-FIX #1: ISO-8601 check-in rotation + agy-turn-status Stop contract & pruning).
+test('2.18.0 Red Team regressions: post-checkin-cap ISO-8601 headings & Live state preservation + agy-turn-status Stop allow, lowercase ID, 529/overloaded quota, and 7-day prune', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccpo-redteam-hooks-'));
+  try {
+    // MUST-FIX #5: real-world check-in fixture with ISO-8601 headings (## 2026-11-16T17:34Z),
+    // ## 2026-11-18, ## Live state, Waiting on JOY, and Active sub-sessions.
+    const checkIn = join(dir, 'dos-platform-po-checkin.md');
+    const archive = getArchivePath(checkIn);
+    const isoSection1 = Array.from({ length: 70 }, (_, i) => `- 2026-11-16T17:${String(i % 60).padStart(2, '0')}Z completed task #${100 + i} cleanly with review notes`).join('\n');
+    const isoSection2 = Array.from({ length: 70 }, (_, i) => `- 2026-11-17T09:${String(i % 60).padStart(2, '0')}Z merged PR #${200 + i} into main cleanly`).join('\n');
+    const newerDated = Array.from({ length: 30 }, (_, i) => `- 2026-11-18T11:${String(i % 60).padStart(2, '0')}Z synced board entry #${300 + i} done`).join('\n');
+    const realFixture = [
+      '# Platform PO check-in (DOS/DOS.AI)',
+      '',
+      'Session: `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`',
+      '',
+      '## On every wake',
+      '1. Triage ready PRs and keep check-in <= 6 KB.',
+      '',
+      '## Waiting on JOY',
+      '- Decision D-042 on staging credentials rotation',
+      '',
+      '## Active sub-sessions',
+      '- `11111111-2222-3333-4444-555555555555` (#7501 API pagination in-flight)',
+      '',
+      '## 2026-11-16T17:34Z Sprint Digest',
+      isoSection1,
+      '',
+      '## 2026-11-17T09:00Z Release Digest',
+      isoSection2,
+      '',
+      '## 2026-11-18 Latest Digest',
+      newerDated,
+      '',
+      '## Live state',
+      '- 2026-11-15T08:00Z older live sync snapshot archived note',
+      '- 2026-11-15T09:00Z another older live sync note',
+      '- Active PR #7502 in-flight waiting on CI green',
+      '- Open release freeze window active through Friday',
+      '',
+    ].join('\n');
+    writeFileSync(checkIn, realFixture, 'utf8');
+    assert.ok(Buffer.byteLength(realFixture, 'utf8') > CHECKIN_CAP_BYTES);
+
+    const res = enforceCheckInCap(checkIn);
+    assert.equal(res.changed, true);
+    assert.equal(res.withinCap, true);
+    assert.ok(res.afterBytes <= CHECKIN_CAP_BYTES);
+
+    const kept = readFileSync(checkIn, 'utf8');
+    assert.match(kept, /## On every wake/);
+    assert.match(kept, /## Waiting on JOY[\s\S]*Decision D-042/);
+    assert.match(kept, /## Active sub-sessions[\s\S]*#7501 API pagination in-flight/);
+    assert.match(kept, /## Live state/);
+    assert.match(kept, /Active PR #7502 in-flight waiting on CI green/);
+    assert.match(kept, /Open release freeze window active through Friday/);
+    assert.doesNotMatch(kept, /## 2026-11-16T17:34Z/);
+
+    assert.ok(existsSync(archive));
+    const archivedText = readFileSync(archive, 'utf8');
+    assert.match(archivedText, /## 2026-11-16T17:34Z Sprint Digest/);
+
+    // Even a Live state filled ONLY with undated bullets must never be wiped empty.
+    const liveUndated = join(dir, 'dos-undated-po-checkin.md');
+    const liveUndatedText = `# Undated PO check-in\n\n## Live state\n${
+      Array.from({ length: 130 }, (_, i) => `- Tracking custom deployment state item #${i} for core cluster`).join('\n')
+    }\n`;
+    writeFileSync(liveUndated, liveUndatedText, 'utf8');
+    const undatedRes = enforceCheckInCap(liveUndated);
+    assert.equal(undatedRes.changed, false);
+    assert.equal(readFileSync(liveUndated, 'utf8'), liveUndatedText);
+
+    // SHOULD-FIX #1: agy-turn-status.mjs Stop -> {"decision":"allow"}, PostInvocation -> {},
+    // lowercase conversationId, 529/overloaded -> quota, and auto-prune > 7 days.
+    assert.equal(extractConversationId({ conversationId: 'ABC-DEF-999' }, {}), 'abc-def-999');
+    assert.equal(classifyTurnStatus({ error: 'HTTP 529 overloaded' }), 'quota');
+    assert.equal(classifyTurnStatus({ reason: 'backend overloaded' }), 'quota');
+
+    const statusDir = join(dir, 'turn-status');
+    const stopOut = runAgyTurnStatusHook(
+      JSON.stringify({ conversationId: 'UPPER-ID-1', hookEventName: 'Stop', error: '529 overloaded' }),
+      { dir: statusDir, now: '2026-11-21T10:00:00Z' },
+    );
+    assert.deepEqual(stopOut, { decision: 'allow' });
+    const savedLower = JSON.parse(readFileSync(join(statusDir, 'upper-id-1.json'), 'utf8'));
+    assert.equal(savedLower.conversationId, 'upper-id-1');
+    assert.equal(savedLower.status, 'quota');
+
+    const postInvOut = runAgyTurnStatusHook(
+      JSON.stringify({ conversationId: 'post-inv-1', hookEventName: 'PostInvocation', status: 'ok' }),
+      { dir: statusDir, now: '2026-11-21T10:00:00Z' },
+    );
+    assert.deepEqual(postInvOut, {});
+
+    // Subprocess CLI verification: Stop prints {"decision":"allow"} and exits 0.
+    const turnScript = join(root, 'plugins/cc-po/hooks/agy-turn-status.mjs');
+    const stopCli = spawnSync(process.execPath, [turnScript], {
+      input: JSON.stringify({ conversationId: 'CLI-STOP-1', hookEventName: 'Stop', terminationReason: 'completed' }),
+      encoding: 'utf8',
+      env: { ...process.env, CC_PO_TURN_STATUS_DIR: statusDir },
+    });
+    assert.equal(stopCli.status, 0, stopCli.stderr);
+    assert.deepEqual(JSON.parse(stopCli.stdout), { decision: 'allow' });
+    assert.ok(existsSync(join(statusDir, 'cli-stop-1.json')));
+
+    // Auto-prune removes turn-status *.json files older than 7 days while keeping recent ones.
+    const nowMs = Date.parse('2026-11-21T10:00:00Z');
+    const staleFile = join(statusDir, 'stale-8-days.json');
+    const freshFile = join(statusDir, 'fresh-1-day.json');
+    writeFileSync(staleFile, '{"status":"ok"}\n', 'utf8');
+    writeFileSync(freshFile, '{"status":"ok"}\n', 'utf8');
+    const staleDate = new Date(nowMs - TURN_STATUS_TTL_MS - 24 * 60 * 60_000);
+    const freshDate = new Date(nowMs - 24 * 60 * 60_000);
+    utimesSync(staleFile, staleDate, staleDate);
+    utimesSync(freshFile, freshDate, freshDate);
+
+    const pruned = pruneStaleTurnStatus(statusDir, { now: nowMs, force: true });
+    assert.ok(pruned >= 1);
+    assert.equal(existsSync(staleFile), false, 'file > 7 days old must be pruned');
+    assert.equal(existsSync(freshFile), true, 'recent file must be preserved');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 2.18.0 live production bugfix #1: 3-tier gh pr list fallback (502/504 -> midFields -> baseFields) & gh issue list fallback.
+test('2.18.0 live bugfix #1: defaultQueryOpenPrs, queryClaudeOpenPrs, and open-issues queries fall back cleanly on HTTP 502/504 and unknown json field', () => {
+  for (const [label, queryPrs, queryIssues] of [
+    ['agy-gatekeeper', defaultQueryOpenPrs, defaultQueryOpenIssues],
+    ['claude-gatekeeper-eval', queryClaudeOpenPrs, queryClaudeOpenIssues],
+  ]) {
+    // Tier 1 (fullFields, limit 50) fails with HTTP 502 -> falls back to Tier 2 (midFields, limit 100).
+    const calls502 = [];
+    const prsFromMid = queryPrs('DOS/DOS.AI', (cmd, args) => {
+      calls502.push({ cmd, args });
+      if (calls502.length === 1) {
+        return { status: 1, stdout: '', stderr: 'GraphQL: Something went wrong while executing your query (HTTP 502)' };
+      }
+      return {
+        status: 0,
+        stdout: JSON.stringify([{ number: 7978, labels: [{ name: 'line:platform' }], mergeStateStatus: 'CLEAN', reviewDecision: 'APPROVED', headRefOid: 'abc123', updatedAt: '2026-11-21T15:00:00Z' }]),
+        stderr: '',
+      };
+    });
+    assert.equal(calls502.length, 2, `${label}: expected 2 calls on 502 fallback`);
+    assert.equal(calls502[0].args[calls502[0].args.indexOf('--limit') + 1], '50', `${label}: tier 1 limit`);
+    assert.match(calls502[0].args[calls502[0].args.indexOf('--json') + 1], /statusCheckRollup,comments/);
+    assert.equal(calls502[1].args[calls502[1].args.indexOf('--limit') + 1], '100', `${label}: tier 2 limit`);
+    assert.equal(
+      calls502[1].args[calls502[1].args.indexOf('--json') + 1],
+      'number,labels,mergeStateStatus,reviewDecision,headRefOid,updatedAt',
+      `${label}: tier 2 midFields`,
+    );
+    assert.equal(prsFromMid.length, 1);
+    assert.equal(prsFromMid[0].number, 7978);
+
+    // Tier 1 fails with HTTP 504, Tier 2 fails with unknown json field -> falls back to Tier 3 (baseFields, limit 100).
+    const calls3Tier = [];
+    const prsFromBase = queryPrs('DOS/DOS.AI', (cmd, args) => {
+      calls3Tier.push({ cmd, args });
+      if (calls3Tier.length === 1) return { status: 1, stdout: '', stderr: 'HTTP 504: Gateway Timeout' };
+      if (calls3Tier.length === 2) return { status: 1, stdout: '', stderr: 'Unknown JSON field: "reviewDecision"' };
+      return {
+        status: 0,
+        stdout: JSON.stringify([{ number: 7979, labels: [{ name: 'line:platform' }], mergeStateStatus: 'CLEAN', updatedAt: '2026-11-21T15:05:00Z' }]),
+        stderr: '',
+      };
+    });
+    assert.equal(calls3Tier.length, 3, `${label}: expected 3-tier fallback`);
+    assert.equal(
+      calls3Tier[2].args[calls3Tier[2].args.indexOf('--json') + 1],
+      'number,labels,mergeStateStatus,updatedAt',
+      `${label}: tier 3 baseFields`,
+    );
+    assert.equal(prsFromBase[0].number, 7979);
+
+    // Tier 2 failure unrelated to unknown json field stops and throws cleanly.
+    const callsHardErr = [];
+    assert.throws(
+      () => queryPrs('DOS/DOS.AI', (cmd, args) => {
+        callsHardErr.push({ cmd, args });
+        return { status: 1, stdout: '', stderr: 'HTTP 500: Internal Server Error' };
+      }),
+      /HTTP 500/,
+    );
+    assert.equal(callsHardErr.length, 2);
+
+    // Open issues query: Tier 1 (limit 50 with comments) fails with HTTP 502 -> falls back to Tier 2 (limit 100 without comments).
+    const issueCalls = [];
+    const issues = queryIssues('DOS/DOS.AI', (cmd, args) => {
+      issueCalls.push({ cmd, args });
+      if (issueCalls.length === 1) return { status: 1, stdout: '', stderr: 'HTTP 502 Bad Gateway' };
+      return {
+        status: 0,
+        stdout: JSON.stringify([{ number: 4001, state: 'OPEN', labels: [{ name: 'line:platform' }], updatedAt: '2026-11-21T15:00:00Z' }]),
+        stderr: '',
+      };
+    });
+    assert.equal(issueCalls.length, 2, `${label}: expected 2 calls on issue fallback`);
+    assert.equal(issueCalls[0].args[issueCalls[0].args.indexOf('--limit') + 1], '50');
+    assert.match(issueCalls[0].args[issueCalls[0].args.indexOf('--json') + 1], /comments/);
+    assert.equal(issueCalls[1].args[issueCalls[1].args.indexOf('--limit') + 1], '100');
+    assert.doesNotMatch(issueCalls[1].args[issueCalls[1].args.indexOf('--json') + 1], /comments/);
+    assert.equal(issues[0].number, 4001);
+  }
+});
+
+// 2.18.0 live production bugfix #2: protocol comment filtering under owner login, strict isDispatchable, and 30m per-issue cooldown.
+test('2.18.0 live bugfix #2: agent protocol comments under owner login do not trigger owner-reply, isDispatchable gates on new/unblocked/unclaimed, and 30m per-issue cooldown applies', () => {
+  const opts = { owner: 'JOY', peerPoLogins: ['peer-po'] };
+
+  // Protocol comments posted using owner's GitHub login (JOY) must NOT trigger owner-reply.
+  for (const body of [
+    'claim: executor=antigravity session=abc123 scope="src/" branch=feat/x target=2026-11-21',
+    'checkpoint: session=abc123 waiting for CI',
+    'done: PR #123 merged into main',
+    'release: session=abc123 releasing lock',
+    'PO acceptance: merge at deadbeef',
+    'blocked: waiting on upstream API key',
+    'status: in-review',
+    'Gatekeeper wake at 2026-11-21T15:00:00Z (reasons: restart).',
+  ]) {
+    const cls = classifyIssueComment({ author: { login: 'JOY' }, body }, opts);
+    assert.equal(cls.isOwner, false, `protocol comment must not be isOwner: ${body}`);
+    assert.equal(cls.isAgentProtocol, true, `must detect protocol comment: ${body}`);
+    assert.equal(cls.tag, 'protocol', body);
+  }
+
+  // handoff: and genuine human owner replies under JOY login still classify and trigger properly.
+  const handoffCls = classifyIssueComment({ author: { login: 'JOY' }, body: 'handoff: ready for Production deployment' }, opts);
+  assert.equal(handoffCls.isHandoff, true);
+  assert.equal(handoffCls.isOwner, false);
+  assert.equal(handoffCls.tag, 'handoff');
+
+  const humanOwnerCls = classifyIssueComment({ author: { login: 'JOY' }, body: 'Approved — please ship this before Friday.' }, opts);
+  assert.equal(humanOwnerCls.isOwner, true);
+  assert.equal(humanOwnerCls.isAgentProtocol, false);
+  assert.equal(humanOwnerCls.tag, 'owner');
+
+  const po = { title: 'Core PO', label: 'line:core' };
+  const baseMs = Date.parse('2026-11-21T16:00:00Z');
+  const session = {
+    conversationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    isRunning: false,
+    lastPlannerMs: baseMs - 20 * 60_000,
+    lastActivityMs: baseMs - 20 * 60_000,
+    consecutiveUnansweredWakes: 0,
+  };
+  const cfg = { owner: 'JOY', subSessionsNormal: 3 };
+
+  // Known issue receiving protocol comments under JOY login -> NO wake (no owner-reply, no dispatchable).
+  const existingIssue = {
+    number: 601,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: new Date(baseMs - 30 * 60_000).toISOString(),
+    comments: [],
+  };
+  const prevStateWith601 = {
+    issueFingerprints: { '601': buildIssueFingerprint(existingIssue, opts) },
+  };
+  const protocolUpdate = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+      comments: [{ author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'checkpoint: session=xyz tests green' }],
+    }],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(protocolUpdate.shouldWake, false, 'protocol comment by JOY on known issue must not wake');
+
+  // Known issue with ordinary non-owner comment (no blocked->unblocked transition) -> NO wake.
+  const ordinaryComment = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+      comments: [{ author: { login: 'contributor' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'FYI saw this too' }],
+    }],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(ordinaryComment.shouldWake, false, 'ordinary comment on already-known issue must not wake isDispatchable');
+
+  // New issue that already has an active claim: comment -> NOT dispatchable; once released -> dispatchable.
+  const claimedNewIssue = {
+    number: 602,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+    comments: [{ author: { login: 'JOY' }, createdAt: new Date(baseMs - 6 * 60_000).toISOString(), body: 'claim: executor=codex session=s1 scope="a" branch=b target=2026-11-22' }],
+  };
+  const claimedEval = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [claimedNewIssue],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(claimedEval.shouldWake, false, 'issue with active claim: must not wake as dispatchable');
+
+  // Brand-new unclaimed issue on line (prevFp === undefined && isFresh) -> wakes with trigger 'dispatchable'.
+  const brandNewIssue = {
+    number: 603,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }],
+    updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+    comments: [],
+  };
+  const newEval = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [brandNewIssue],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(newEval.shouldWake, true);
+  assert.deepEqual(newEval.reasons, ['issue-dispatchable-or-owner-reply']);
+  assert.equal(newEval.triggeredIssues[0].number, 603);
+  assert.equal(newEval.triggeredIssues[0].trigger, 'dispatchable');
+
+  // Issue transitioning from blocked -> unblocked wakes with trigger 'unblocked'.
+  const blockedPrevIssue = {
+    number: 604,
+    state: 'OPEN',
+    labels: [{ name: 'line:core' }, { name: 'blocked' }],
+    updatedAt: new Date(baseMs - 60 * 60_000).toISOString(),
+    comments: [],
+  };
+  const blockedFp = buildIssueFingerprint(blockedPrevIssue, opts);
+  assert.deepEqual(extractIssueLabelsFromFingerprint(blockedFp), ['blocked', 'line:core']);
+  const unblockedEval = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...blockedPrevIssue,
+      labels: [{ name: 'line:core' }],
+      updatedAt: new Date(baseMs - 4 * 60_000).toISOString(),
+    }],
+    prevPoState: { issueFingerprints: { '604': blockedFp } },
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(unblockedEval.shouldWake, true);
+  assert.equal(unblockedEval.triggeredIssues[0].number, 604);
+  assert.equal(unblockedEval.triggeredIssues[0].trigger, 'unblocked');
+
+  // Genuine owner reply wakes AND sets 30-minute per-issue cooldown (issueAlertedAt).
+  const ownerReply1 = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs - 5 * 60_000).toISOString(),
+      comments: [{ author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'Looks good, go ahead!' }],
+    }],
+    prevPoState: prevStateWith601,
+    config: cfg,
+    nowMs: baseMs,
+    multiSignal: true,
+  });
+  assert.equal(ownerReply1.shouldWake, true);
+  assert.equal(ownerReply1.triggeredIssues[0].trigger, 'owner-reply');
+  assert.equal(ownerReply1.nextPoState.issueAlertedAt['601:owner-reply'], baseMs);
+
+  // Another genuine owner reply on #601 just 10 minutes later is suppressed by 30m per-issue cooldown.
+  const ownerReplyCooldown = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs + 8 * 60_000).toISOString(),
+      comments: [
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'Looks good, go ahead!' },
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs + 8 * 60_000).toISOString(), body: 'Also check edge case B' },
+      ],
+    }],
+    prevPoState: ownerReply1.nextPoState,
+    config: cfg,
+    nowMs: baseMs + 10 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(ownerReplyCooldown.shouldWake, false, 'same issue+trigger within 30m must be suppressed by issueAlertedAt cooldown');
+
+  // After 35 minutes (> 30m cooldown), a new owner reply wakes again.
+  const ownerReplyAfterCooldown = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [{
+      ...existingIssue,
+      updatedAt: new Date(baseMs + 34 * 60_000).toISOString(),
+      comments: [
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs - 5 * 60_000).toISOString(), body: 'Looks good, go ahead!' },
+        { author: { login: 'JOY' }, createdAt: new Date(baseMs + 34 * 60_000).toISOString(), body: 'Ping after 35m' },
+      ],
+    }],
+    prevPoState: ownerReply1.nextPoState,
+    config: cfg,
+    nowMs: baseMs + 35 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(ownerReplyAfterCooldown.shouldWake, true);
+  assert.equal(ownerReplyAfterCooldown.triggeredIssues[0].trigger, 'owner-reply');
+});
+
+// 2.18.0 live bugfix #3 (overnight monitoring): queued wakes without transcript SYSTEM_MESSAGE
+// must trigger backoff via state.json unansweredSendsSincePlanner and never re-fire safety-heartbeat every 10m.
+test('2.18.0 live bugfix #3: queued wakes trigger state-based backoff, gate safety-heartbeat on prevSentAtMs, and handle send-backoff', () => {
+  const po = { title: 'DOS Claw PO', label: 'line:dosclaw' };
+  const cfg = { heartbeatActiveMinutes: 180, heartbeatIdleMinutes: 720, multiSignal: true };
+  const activePrs = [{
+    number: 7076,
+    labels: [{ name: 'line:dosclaw' }],
+    mergeStateStatus: 'BLOCKED',
+    reviewDecision: '',
+    headRefOid: 'aaa111',
+    updatedAt: '2026-11-22T00:00:00Z',
+    statusCheckRollup: [],
+    comments: [],
+  }];
+  const tPlanner = Date.parse('2026-11-22T00:50:00Z');
+  const tWake1 = tPlanner + 190 * 60_000; // 190m idle -> safety-heartbeat (active)
+
+  // Transcript has 0 SYSTEM_MESSAGE wakes written (Antigravity queued send-message in memory).
+  const sessionUnchanged = {
+    conversationId: '7a7191cb-9410-453a-bcf9-766e15b21dcb',
+    lastPlannerMs: tPlanner,
+    lastActivityMs: tPlanner,
+    isRunning: false,
+    consecutiveUnansweredWakes: 0,
+  };
+
+  // Run 1 at +190m: fires safety-heartbeat once.
+  const r1 = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: null,
+    config: cfg,
+    nowMs: tWake1,
+    multiSignal: true,
+  });
+  assert.equal(r1.shouldWake, true);
+  assert.ok(r1.reasons.some((r) => r.startsWith('safety-heartbeat (active')));
+
+  // Simulate state.json recorded after successful send at tWake1.
+  const stateAfterSend1 = {
+    ...r1.nextPoState,
+    lastSentAtMs: tWake1,
+    unansweredSendsSincePlanner: 1,
+  };
+
+  // Run 2 at +10m (transcript STILL shows consecutiveUnansweredWakes=0): MUST enter backoff, NOT re-fire safety-heartbeat!
+  const r2 = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: stateAfterSend1,
+    config: cfg,
+    nowMs: tWake1 + 10 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(r2.shouldWake, false, 'queued wake without transcript SYSTEM_MESSAGE must enter backoff at +10m');
+  assert.equal(r2.skipped, 'backoff');
+  assert.equal(r2.consecutiveUnansweredWakes, 1);
+
+  // Run 3 at +60m: backoff expires -> quota-recovery-probe fires, NOT safety-heartbeat (only 60m since prevSentAtMs < 180m).
+  const r3 = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: stateAfterSend1,
+    config: cfg,
+    nowMs: tWake1 + 60 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(r3.shouldWake, true);
+  assert.ok(r3.reasons.includes('quota-recovery-probe'));
+  assert.equal(r3.reasons.some((r) => r.startsWith('safety-heartbeat')), false, 'safety-heartbeat must gate on max(lastPlannerMs, prevSentAtMs)');
+
+  // Legacy state.json with lastSentAtMs > lastPlannerMs (no unansweredSendsSincePlanner field) also backs off cleanly.
+  const legacyState = { ...r1.nextPoState, lastSentAtMs: tWake1 };
+  const rLegacy = evaluateSignals({
+    po,
+    session: sessionUnchanged,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: legacyState,
+    config: cfg,
+    nowMs: tWake1 + 20 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(rLegacy.shouldWake, false);
+  assert.equal(rLegacy.skipped, 'backoff');
+
+  // Once PO finally answers after tWake1, unansweredSendsSincePlanner resets cleanly to 0 -> no-reason.
+  const sessionAnswered = {
+    ...sessionUnchanged,
+    lastPlannerMs: tWake1 + 65 * 60_000,
+    lastActivityMs: tWake1 + 65 * 60_000,
+  };
+  const rAnswered = evaluateSignals({
+    po,
+    session: sessionAnswered,
+    subSessions: [],
+    openPrs: activePrs,
+    openIssues: [],
+    prevPoState: { ...r3.nextPoState, lastSentAtMs: tWake1 + 60 * 60_000, unansweredSendsSincePlanner: 2 },
+    config: cfg,
+    nowMs: tWake1 + 70 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(rAnswered.shouldWake, false);
+  assert.equal(rAnswered.skipped, 'no-reason');
+  assert.equal(rAnswered.nextPoState.unansweredSendsSincePlanner, 0);
 });

@@ -13,11 +13,11 @@ a sub-session needs from the owner reaches the owner through the PO chat.
 
 ## Reference guides (read when needed)
 
-- [Wake-ups, gatekeeper, watchdog, and monitor retries](./references/wake-ups.md) (`po_wake`, check-in file, `claude-gatekeeper-preflight.mjs`, wait labels, `set_monitor` retry hygiene)
+- [Wake-ups, gatekeeper, watchdog, and monitor retries](./references/wake-ups.md) (`po_wake`, check-in file, `claude-gatekeeper-eval.mjs`, `claude-gatekeeper-preflight.mjs`, platform heartbeats, `set_monitor` retry hygiene)
 - [Sprint review and scope audit](./references/sprint-review.md) (`sprint_review: on`, Part A/B, non-symlink snapshot, verification, report PR)
 - [Promotions, Production steps, and peer POs](./references/promotions-and-peers.md) (`shared_core_review`, `shared_core_wait`, `shared_core_label`, runbook verification, isolated clone, deploy gates)
 - [PO handoff, parallel POs, and check-in cap](./references/handoff-and-parallel.md) (`po_labels` runtime labels, `<slug>-<tool>-po-checkin.md`, `<= 6 KB` rolling cap, `po_handoff`, exception precedence)
-- [Antigravity host orchestration and models](./references/antigravity-host.md) (2-phase planning/execution, `run_workflow`, `swarm(models)`, `po-model-advisor.mjs`, Orchestrator, sidecars)
+- [Antigravity host orchestration and models](./references/antigravity-host.md) (2-phase planning/execution, `run_workflow`, `swarm(models)`, `po-model-advisor.mjs`, Orchestrator, 10m multi-signal `agy-gatekeeper.mjs`, Profile Affinity Guard, root `hooks.json`)
 
 ## The config
 
@@ -41,8 +41,8 @@ and defaults are in `config-schema.md` next to this skill.
 
 - State lives on GitHub and in the check-in file (`<= 6144` bytes / `6 KB`; see [Wake-ups](./references/wake-ups.md) and [Handoff and parallel POs](./references/handoff-and-parallel.md)).
 - A wake turn is short (do only what the wake needs; a quiet wake with nothing to do gets a one-line digest). Read only what the reason needs. Never re-read a long log, transcript or diff already summarised.
-- Keep tool output short: cut the output with `--jq` and `--limit`. Delegate wide reads. Read-only diffs/logs/audits go to subagents (`po-explorer`, `po-reviewer`, `po-security-reviewer`). Never read a session transcript or a long file into the PO (no `export_transcript`, no bulk `list_events`).
-- The PO is one long-lived session. It relies on the app's automatic context compaction and never asks the owner to compact it, restart it or open a new PO session because of its context size. A PO ignores any "Handoff notice" or "Context notice" in a wake message.
+- Keep tool output short: cut the output with `--jq` and `--limit`. Delegate wide reads. Offload board `item-list`, audits, and diffs/logs to read-only subagents (`po-explorer` / `research` on `flash`, `po-reviewer`, `po-security-reviewer`) or `run_workflow`, returning compact digests (`<= 30` lines). Never read a session transcript or a long file into the PO (no `export_transcript`, no bulk `list_events`).
+- The PO is one long-lived session. It relies on the app's automatic context compaction and never asks the owner to compact it, restart it or open a new PO session because of its context size; where supported, proactively `/compact` around ~100K–120K tokens (or `po_context_compact_tokens`) to avoid ~300K cold-wake bloat. A PO ignores any "Handoff notice" or "Context notice" in a wake message.
 
 ## Lines, names, and what the PO does
 
