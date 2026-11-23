@@ -1,33 +1,65 @@
 # PO Handoff, Parallel POs, and Rolling Check-In Cap
 
-## Parallel POs (`po_labels`)
+## Parallel POs (`po_labels`), Equal Authority, and Cross-Runtime Cover
 
 **Parallel POs** (only when the config sets `po_labels`): POs of different
-runtimes may run on one repository at once, each with its mutual-exclusion
-runtime label (such as `po:claude`, `po:agy`, or `po:qwen`).
+runtimes (for example Antigravity `po:agy` and Claude `po:claude`, or Qwen
+`po:qwen`) may run on one repository at once. **All configured runtime POs hold
+equal authority** over the line (acceptance gate, merges, and owner-approved
+Production promotions); `po_labels` is an anti-collision dispatch lock while
+both runtimes are healthy, never a hierarchy.
 
-- A PO dispatches only issues that carry its own label or none of the
-  `po_labels` labels, and adds its own label when it dispatches, before
-  `start_session` or the `PO queued:` comment
+- **Normal mode (both POs healthy):** A PO dispatches only issues that carry
+  its own label or none of the `po_labels` labels, and adds its own label when
+  it dispatches, before `start_session` or the `PO queued:` comment
   (`gh issue edit <n> --repo <owner/repo> --add-label <its label>`). An issue
-  with another PO's label is that PO's, unless the owner assigns it (then a
-  take-over, "Claim lock" in `task-claim`). A PO whose runtime has no pair
-  dispatches only issues with none of these labels and adds none. If an issue
-  ends up with two PO labels, the PO whose sub-session does not hold the lock
-  removes its own label.
-- Everything else a PO does for issues and PRs (the acceptance gate, merges,
-  PR monitoring, the orphaned-handoff scan, Production steps, the digest)
-  covers only the issues that carry its own label, and their PRs.
-  `sub_sessions_normal` and `sub_sessions_max` count each PO's own
+  with another PO's label is owned by that PO while it is healthy, unless the
+  owner assigns it (then a take-over, "Claim lock" in `task-claim`). A PO whose
+  runtime has no pair dispatches only issues with none of these labels and adds
+  none. If an issue ends up with two PO labels, the PO whose sub-session does
+  not hold the lock removes its own label.
+- **Anti-collision during healthy operation:** Everything else a PO does for
+  issues and PRs (the acceptance gate, merges, PR monitoring, the
+  orphaned-handoff scan, Production steps, the digest) covers only the issues
+  that carry its own label, and their PRs, while both runtimes are healthy
+  (until cross-runtime cover below triggers), avoiding duplicate reviews or
+  merge races. `sub_sessions_normal` and `sub_sessions_max` count each PO's own
   sub-sessions. One PO keeps the sprints and runs the sprint review: the PO of
-  `promotion_po`, else of the first `po_labels` pair. A PO woken for a PR of
-  another PO's issue leaves it alone.
+  `promotion_po`, else of the first `po_labels` pair (and a peer PO may cover
+  sprint rollover if the sprint keeper is unavailable).
+- **Cross-runtime Stand-in / Cover (`peer_po_cover_wait`, default `60` min;
+  set `off`/`none` to disable):** When another runtime PO on the same line is
+  quota-exhausted or unavailable, a healthy peer PO (e.g. Antigravity covering
+  Claude, or Claude covering Antigravity) has **full authority to step in, run
+  the acceptance gate, approve, and merge** its peer's PR — and cover
+  owner-approved Production promotions — when ALL of the following hold:
+  1. **100% merge-ready:** PR is non-draft, `CLEAN`/`UNSTABLE`, all
+     `required_checks` green, reviews complete, all threads resolved, no
+     `CHANGES_REQUESTED`, and if touching auth/money/security/migrations/Production
+     it already has an independent flagship/security review on the final head.
+  2. **Peer PO unavailable or quota-limited:** EITHER the PR has been
+     merge-ready for `>= peer_po_cover_wait` minutes (default `60`) without
+     action from the peer PO, OR the peer PO is visibly quota-exhausted/stopped
+     (e.g. `turn-status` reports `quota`, repeated unanswered wakes, or owner
+     says so directly), OR the owner explicitly asks this PO to cover.
+  3. **Safe merge & Prod discipline:** Post
+     `PO acceptance (cover by <runtime> PO): merge at <full 40-char head sha>`
+     on the PR, merge with `--match-head-commit <full 40-char head sha>`, and
+     note `Covered by <runtime> PO while <peer runtime> PO was unavailable/quota-limited`.
+     For runtime changes into `integration_branch`, keep the issue **open**
+     (add `ready_for_prod_label` if set, never post `done:` before Production
+     verification). For Production/secret steps, still get owner approval in PO
+     chat via popup before executing.
+  4. **Do not hijack healthy in-flight work:** Never take over or kill a peer
+     PO's actively running sub-session that is still making progress.
 - **Separate check-in and handoff files per runtime:** Each PO keeps its own
   check-in and handoff files, named with its runtime
   (`<slug>-<tool>-po-checkin.md`, `<slug>-<tool>-po-handoff.md`), or the files
   the repository's rules name for it, and never writes the other PO's.
-- Only the PO of `promotion_po` promotes, when the config names one
-  ("Promoting to Production").
+- **Production promotion (`promotion_po`):** When `promotion_po` names one
+  runtime, that PO promotes first while healthy; if it is quota-exhausted or
+  unavailable beyond `peer_po_cover_wait`, any healthy peer PO on the line may
+  cover the promotion with owner approval ("Promoting to Production").
 - Each sub-session claims with its own claimant (`<tool>:<session id>`), never
   its PO's.
 

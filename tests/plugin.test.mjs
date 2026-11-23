@@ -785,9 +785,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.18.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.18.0');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.18.0');
+test('the version is 2.19.0 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.19.0');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.19.0');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -3721,4 +3721,56 @@ test('2.18.0 live bugfix #3: queued wakes trigger state-based backoff, gate safe
   assert.equal(rAnswered.shouldWake, false);
   assert.equal(rAnswered.skipped, 'no-reason');
   assert.equal(rAnswered.nextPoState.unansweredSendsSincePlanner, 0);
+});
+
+// 2.19.0: Done = Prod Verified guardrails (ready_for_prod_label, Refs warning on separate production_branch)
+// and Equal PO Authority + Cross-Runtime Cover (peer_po_cover_wait).
+test('2.19.0 Done = Prod Verified guardrails and equal PO cross-runtime cover (ready_for_prod_label, peer_po_cover_wait)', () => {
+  // Optional keys accepted and validated cleanly.
+  const valid219 = checkConfig(
+    minimal
+    + '\n- integration_branch: dev\n- production_branch: main\n- pr_issue_keyword: Refs\n- ready_for_prod_label: ready-for-prod\n- po_labels: claude: po:claude, agy: po:agy\n- peer_po_cover_wait: 60\n',
+  );
+  assert.deepEqual(valid219, { errors: [], warnings: [] });
+
+  assert.deepEqual(
+    checkConfig(minimal + '\n- ready_for_prod_label: none\n- peer_po_cover_wait: off\n'),
+    { errors: [], warnings: [] },
+  );
+
+  // Warning when production_branch differs from integration_branch and pr_issue_keyword is a closing keyword.
+  const closingOnDev = checkConfig(
+    minimal + '\n- integration_branch: dev\n- production_branch: main\n- pr_issue_keyword: Closes\n',
+  );
+  assert.equal(closingOnDev.errors.length, 0);
+  assert.ok(closingOnDev.warnings.some((w) => /pr_issue_keyword.*closing keyword.*production_branch/i.test(w)));
+
+  // Invalid ready_for_prod_label (contains whitespace) and invalid peer_po_cover_wait rejected.
+  const bad219 = checkConfig(
+    minimal + '\n- ready_for_prod_label: ready for prod\n- peer_po_cover_wait: 2\n',
+  );
+  assert.ok(bad219.errors.some((e) => /ready_for_prod_label/.test(e)));
+  assert.ok(bad219.errors.some((e) => /peer_po_cover_wait/.test(e)));
+
+  // Docs and skills enforce Done = Prod Verified and Equal PO + Cross-Runtime Cover.
+  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md');
+  const taskClaim = read('plugins/cc-po/skills/task-claim/SKILL.md');
+  const handoff = read('plugins/cc-po/skills/product-owner/references/handoff-and-parallel.md');
+  const promos = read('plugins/cc-po/skills/product-owner/references/promotions-and-peers.md');
+  const agents = read('plugins/cc-po/rules/AGENTS.md');
+  const readme = read('README.md');
+
+  assert.match(skill, /Done = Prod verified/);
+  assert.match(skill, /ready_for_prod_label/);
+  assert.match(skill, /equal authority/);
+  assert.match(skill, /peer_po_cover_wait/);
+  assert.match(taskClaim, /must never.*post `done:`/s);
+  assert.match(taskClaim, /ready_for_prod_label/);
+  assert.match(handoff, /equal authority/i);
+  assert.match(handoff, /peer_po_cover_wait/);
+  assert.match(handoff, /PO acceptance \(cover by <runtime> PO\): merge at <full 40-char head sha>/);
+  assert.match(promos, /Runtime `Done = Prod Verified` Gate/);
+  assert.match(promos, /peer_po_cover_wait/);
+  assert.match(agents, /Equal PO & Prod Gate/);
+  assert.match(readme, /### Upgrading to 2\.19\.0/);
 });

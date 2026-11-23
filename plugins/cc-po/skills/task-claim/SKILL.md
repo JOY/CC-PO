@@ -101,10 +101,12 @@ collaborator, or contributor, does not count.
 
 Push the first commit and open the PR into `integration_branch` with the
 reference on its own line. Use `Refs`, never Fixes, Closes, or Resolves;
-merging into the integration branch must not close the issue, and a claim
-gate rejects closing keywords. Only when the config sets
-`pr_issue_keyword` to a closing keyword (a gate that reads closing
-references), use that word instead.
+merging into the integration branch must not close the issue before Production
+verification, and a claim gate rejects closing keywords. Only when the config sets `pr_issue_keyword` to a closing keyword (a gate that
+reads closing references) and `production_branch` is `none` (or equals
+`integration_branch`), use that word instead; when `production_branch` is
+separate, always use `Refs` on `integration_branch` PRs so issues stay open
+until Production verification.
 
 ```text
 Refs #<n>
@@ -143,10 +145,17 @@ Post exactly one of:
 - `release: session=<id> reason=<why> status=<Ready|Blocked>` when stopping
   without finishing. A blocker names who can clear it.
 - `done: session=<id>` with the acceptance evidence named in the issue, then
-  close the issue. Follow `done_definition`: CI or a merge alone is not
-  acceptance for a runtime change, a change with no runtime surface (docs,
-  CI, tooling) is Done once merged with its evidence, and a findings or
-  measurements task is Done when its `done:` carries them.
+  close the issue. Follow `done_definition`: CI or a merge into
+  `integration_branch` alone is **never** acceptance for a runtime change.
+  When a runtime change still requires Production release and live
+  verification, a sub-session **must never** post `done:` or close the issue:
+  it posts `handoff: session=<id> to=<PO session id>` (and adds
+  `ready_for_prod_label`, e.g. `ready-for-prod`, when configured) after merging
+  to `integration_branch` and verifying on `test_environment`, leaving the issue
+  open for the PO to close with `done:` only after Production verification. A
+  change with no runtime surface (docs, CI, tooling) is Done once merged with
+  its evidence, and a findings or measurements task is Done when its `done:`
+  carries them.
 
 ## Claim lock
 
