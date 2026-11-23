@@ -134,12 +134,47 @@
    remaining work, and a new sub-session claims it (the one that did the work
    is archived).
 
+## Runtime `Done = Prod Verified` Gate (Never Close Early)
+
+Separate **issue lifecycle** (stays open until live Production verification)
+from **sub-session lifecycle** (archived right after integration merge +
+`test_environment` verification + handoff to PO so slots stay free and cold
+context does not bloat):
+
+- **No closing keywords on integration PRs:** When `production_branch` is set
+  and differs from `integration_branch`, every PR into `integration_branch`
+  **must** use `Refs #<n>` (never `Closes`, `Fixes`, or `Resolves`), so GitHub
+  never auto-closes runtime issues before Production release.
+- **Sub-sessions never post `done:` for runtime changes before Production:**
+  After merging into `integration_branch`, verifying on `test_environment`, and
+  merging any runbook, the sub-session posts
+  `handoff: session=<id> to=<PO session id>` (and adds `ready_for_prod_label`,
+  e.g. `ready-for-prod`, when configured). The PO posts its waiting `claim:`,
+  keeps the issue **open** under digest section `2. Merged, not yet done`, and
+  archives the sub-session to free the slot.
+- **Only the PO closes runtime issues with `done:`** after the Production
+  release is verified live (removing `ready_for_prod_label` if set).
+- **If Production fails or exposes a bug:** The PO executes the approved
+  rollback (if needed), ends its waiting claim with `release: status=Ready`
+  recording the Production failure/logs, and dispatches a **fresh sub-session**
+  on the still-open issue (cheaper and cleaner than waking an archived stale
+  session).
+- **Anti-leak check-in scan:** On triage/check-ins, scan open issues carrying
+  `ready_for_prod_label` (and recent merged integration PRs) so no runtime task
+  sits forgotten between `integration_branch` and `production_branch`.
+
 ## Promoting to Production
 
-Only when the config's `promotion_po` names another runtime than this PO's: this
-PO runs no promotion and no live check after one; it asks that runtime's PO
-(with SendMessage, or through the owner when it cannot reach it) and tracks the
-answer. With `any`, the default, every PO promotes its own line's work.
+Only when the config's `promotion_po` names another runtime than this PO's:
+this PO runs no promotion and no live check after one while that runtime is
+healthy; it asks that runtime's PO (with SendMessage, or through the owner when
+it cannot reach it) and tracks the answer. **Equal authority cover:** when the
+`promotion_po` runtime is quota-exhausted or unavailable beyond
+`peer_po_cover_wait` (default `60` min; disabled only when `off`/`none`), any
+healthy peer PO on the line has equal authority to cover the promotion and live
+verification (still requiring owner approval in PO chat before running
+Production steps). With `any`, the default, every PO promotes its own line's
+work.
 
 This applies when `production_branch` is set. When it is `none`, the
 integration branch ships, so know what a merge into `integration_branch` does

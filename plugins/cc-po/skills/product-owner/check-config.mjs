@@ -22,7 +22,7 @@ export const KNOWN = new Set([
   'roadmap_sources', 'setup_guide', 'decision_log',
   'integration_branch', 'integration_merge', 'default_branch', 'draft_pr_first',
   'production_branch', 'production_merge', 'production_effect', 'promotion_notes',
-  'test_environment', 'done_definition',
+  'test_environment', 'done_definition', 'ready_for_prod_label',
   'required_checks', 'claim_gate', 'external_review_app', 'local_reviews',
   'promotion_reviews', 'shared_core_review', 'shared_core_wait', 'shared_core_label', 'agent_model', 'agent_effort', 'subagent_effort',
   'sub_sessions_normal', 'sub_sessions_max', 'check_in_minutes', 'executors',
@@ -32,7 +32,7 @@ export const KNOWN = new Set([
   'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
   'pr_monitor', 'sidebar_groups',
-  'claim_command', 'pr_issue_keyword', 'po_labels', 'promotion_po',
+  'claim_command', 'pr_issue_keyword', 'po_labels', 'promotion_po', 'peer_po_cover_wait',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -399,6 +399,29 @@ export function checkConfig(text, { root } = {}) {
   }
   if (values.pr_issue_keyword !== undefined && !/^(refs|closes|fixes|resolves|none)(?![\w-])/i.test(unquote(values.pr_issue_keyword))) {
     errors.push('pr_issue_keyword must be Refs, Closes, Fixes, Resolves or none');
+  }
+  const prodBranch = values.production_branch === undefined ? undefined : unquote(values.production_branch).split(/\s+/)[0];
+  const intBranch = values.integration_branch === undefined ? undefined : unquote(values.integration_branch).split(/\s+/)[0];
+  if (
+    prodBranch && !isNone(prodBranch)
+    && (!intBranch || prodBranch !== intBranch)
+    && values.pr_issue_keyword !== undefined
+    && /^(closes|fixes|resolves)(?![\w-])/i.test(unquote(values.pr_issue_keyword))
+  ) {
+    warnings.push('pr_issue_keyword uses a closing keyword while production_branch is separate from integration_branch: merging into integration_branch can close runtime issues before Production verification (prefer Refs)');
+  }
+  if (values.ready_for_prod_label !== undefined && !isNone(values.ready_for_prod_label)) {
+    const rfp = unquote(values.ready_for_prod_label).trim();
+    if (!rfp || /\s/.test(rfp.split(/\s+\(/)[0])) {
+      errors.push('ready_for_prod_label must be a single GitHub label name without spaces (e.g. ready-for-prod) or none');
+    }
+  }
+  if (values.peer_po_cover_wait !== undefined && !isNone(values.peer_po_cover_wait) && !/^off(?![\w-])/i.test(unquote(values.peer_po_cover_wait))) {
+    const m = unquote(values.peer_po_cover_wait).match(/^(\d+)(?![\w.-])/);
+    const n = m ? Number(m[1]) : NaN;
+    if (!Number.isInteger(n) || n < 5 || n > 1440) {
+      errors.push('peer_po_cover_wait must be a number of minutes from 5 to 1440, off, or none (default 60)');
+    }
   }
   const poTools = new Set();
   if (values.po_labels !== undefined && !isNone(values.po_labels)) {

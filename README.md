@@ -910,6 +910,32 @@ plugin folder and restart Antigravity.
   each `*-agy-gatekeeper.json` sets `brainDir` for its own profile, and disable
   any duplicate gatekeeper sidecar enabled on another profile.
 
+### Upgrading to 2.19.0
+
+No required config change: existing configs remain valid and backwards
+compatible. Update the plugin in Claude Code (`claude plugin update`) or
+re-copy `plugins/cc-po` into your Antigravity plugin folder and restart
+Antigravity.
+
+- **Hardened `Done = Prod Verified` guardrails (`ready_for_prod_label`):**
+  Forbids sub-sessions from posting `done:` or closing runtime issues before
+  Production release and live verification. Requires `Refs #<n>` (never
+  `Closes`/`Fixes`/`Resolves`) on `integration_branch` PRs when
+  `production_branch` is separate (enforced with a `check-config.mjs` warning),
+  keeps issues open under PO ownership (with optional `ready_for_prod_label`,
+  e.g. `ready-for-prod`) while archiving sub-sessions right after `dev` +
+  Staging handoff to keep slots free, and dispatches a fresh sub-session if
+  Production fails.
+- **Equal PO authority across runtimes & cross-runtime cover
+  (`peer_po_cover_wait`, default `60` min):** Declares Antigravity (`po:agy`)
+  and Claude (`po:claude`) parallel POs equal in authority. Keeps `po:*`
+  anti-collision boundaries while both are healthy, and authorizes a healthy
+  peer PO to run the acceptance gate, approve
+  (`PO acceptance (cover by <runtime> PO): merge at <sha>`), merge via
+  `--match-head-commit`, and cover owner-approved Production promotions when
+  the peer PO is quota-exhausted or quiet for `>= peer_po_cover_wait` minutes
+  (set `off`/`none` to disable).
+
 ## License
 
 [MIT](LICENSE)
