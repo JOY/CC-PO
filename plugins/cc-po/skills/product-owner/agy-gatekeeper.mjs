@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import {
   acquirePoLock,
   checkProfileAffinity,
+  computeBackoffMs,
   DEFAULT_DEBOUNCE_MS,
   DEFAULT_LOCK_TTL_MS,
   DEFAULT_STALE_RUNNING_MS,

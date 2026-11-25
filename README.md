@@ -936,6 +936,14 @@ Antigravity.
   the peer PO is quota-exhausted or quiet for `>= peer_po_cover_wait` minutes
   (set `off`/`none` to disable).
 
+### Upgrading to 2.19.1
+
+- **Fix `agy-gatekeeper.mjs` `send-backoff` crash (`computeBackoffMs is not
+  defined`):** Imports `computeBackoffMs` from `gatekeeper-core.mjs` so
+  exponential `send-backoff` (`10m → 20m → 40m → 60m`) after an `agentapi
+  send-message` timeout works cleanly without crashing subsequent sidecar runs,
+  covered by a dedicated end-to-end `runGatekeeper` regression test.
+
 ## License
 
 [MIT](LICENSE)

@@ -785,9 +785,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.19.0 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.19.0');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.19.0');
+test('the version is 2.19.1 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.19.1');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.19.1');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -3773,4 +3773,105 @@ test('2.19.0 Done = Prod Verified guardrails and equal PO cross-runtime cover (r
   assert.match(promos, /peer_po_cover_wait/);
   assert.match(agents, /Equal PO & Prod Gate/);
   assert.match(readme, /### Upgrading to 2\.19\.0/);
+  assert.match(readme, /### Upgrading to 2\.19\.1/);
+});
+
+// 2.19.1 regression: end-to-end runGatekeeper send-failed -> send-backoff -> retry -> restart bypass.
+test('2.19.1 agy-gatekeeper: send-failed triggers send-backoff via imported computeBackoffMs, retries after backoff, and bypasses on restart', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-po-send-backoff-'));
+  try {
+    const brainDir = join(dir, 'Antigravity Profiles', 'acc3', 'gemini', 'antigravityprofileacc3', 'brain');
+    const execDataDir = join(dir, 'Antigravity Profiles', 'acc3', 'gemini', 'antigravityprofileacc3', 'sidecar_data', 'gk', 'data');
+    const turnStatusDir = join(dir, 'turn-status');
+    const lockDir = join(dir, 'locks');
+    const poId = 'caa8bbe1-80f2-41de-968d-a2850bb922be';
+    const transcriptDir = join(brainDir, poId, '.system_generated', 'logs');
+    mkdirSync(transcriptDir, { recursive: true });
+    mkdirSync(execDataDir, { recursive: true });
+    mkdirSync(turnStatusDir, { recursive: true });
+    mkdirSync(lockDir, { recursive: true });
+
+    const t0 = Date.parse('2026-11-25T10:00:00Z');
+    const transcriptPath = join(transcriptDir, 'transcript.jsonl');
+    writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(t0).toISOString() })}\n`,
+    );
+    const pastDate = new Date(t0);
+    utimesSync(transcriptPath, pastDate, pastDate);
+
+    const cfgPath = join(dir, 'gk.json');
+    writeFileSync(cfgPath, JSON.stringify({
+      repo: 'DOS/One-Spawn',
+      owner: 'JOY',
+      language: 'Vietnamese',
+      brainDir,
+      heartbeatActiveMinutes: 180,
+      heartbeatIdleMinutes: 720,
+      pos: [{ title: 'One Spawn Product Owner', conversationId: poId, label: 'line:client', checkInFile: join(dir, 'checkin.md') }],
+    }));
+
+    const readyPr = [{
+      number: 301,
+      labels: [{ name: 'line:client' }],
+      mergeStateStatus: 'CLEAN',
+      reviewDecision: 'APPROVED',
+      headRefOid: 'deadbeef0001',
+      updatedAt: new Date(t0 + 10 * 60_000).toISOString(),
+      statusCheckRollup: [],
+      comments: [],
+    }];
+    const env = { ANTIGRAVITY_PROFILE: 'acc3', ANTIGRAVITY_EXECUTABLE_DATA_DIR: execDataDir };
+
+    // Pass 1 (+20m): sendMessage fails with ETIMEDOUT -> sendFailed=true, consecutiveSendFailures=1 persisted.
+    const r1 = runGatekeeper(cfgPath, {
+      env,
+      nowMs: t0 + 20 * 60_000,
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: new Date(t0 - 3600_000).toISOString(), appStartTime: '' }),
+      queryOpenPrs: () => readyPr,
+      queryOpenIssues: () => [],
+      sendMessage: () => { throw new Error('spawnSync language_server ETIMEDOUT'); },
+    });
+    assert.equal(r1.status.actions[0].sendFailed, true);
+    assert.equal(r1.status.actions[0].woke, false);
+
+    // Pass 2 (+25m, 5m after failure < 10m backoff): MUST NOT crash with ReferenceError; skips with send-backoff!
+    let sendCalls2 = 0;
+    const r2 = runGatekeeper(cfgPath, {
+      env,
+      nowMs: t0 + 25 * 60_000,
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: new Date(t0 - 3600_000).toISOString(), appStartTime: '' }),
+      queryOpenPrs: () => readyPr,
+      queryOpenIssues: () => [],
+      sendMessage: () => { sendCalls2 += 1; },
+    });
+    assert.equal(sendCalls2, 0);
+    assert.equal(r2.actions[0].skipped, 'send-backoff');
+    assert.equal(r2.status.actions[0].sendBackoff, true);
+
+    // Pass 3 (+27m, fresh app restart after failure): bypasses send-backoff immediately and wakes!
+    let sendCalls3 = 0;
+    const r3 = runGatekeeper(cfgPath, {
+      env,
+      nowMs: t0 + 27 * 60_000,
+      turnStatusDir,
+      lockDir,
+      getRestartTimes: () => ({ bootTime: new Date(t0 - 3600_000).toISOString(), appStartTime: new Date(t0 + 26 * 60_000).toISOString() }),
+      queryOpenPrs: () => readyPr,
+      queryOpenIssues: () => [],
+      sendMessage: () => { sendCalls3 += 1; },
+    });
+    assert.equal(sendCalls3, 1);
+    assert.equal(r3.status.actions[0].woke, true);
+
+    // Verify persisted consecutiveSendFailures reset cleanly to 0 after successful send.
+    const savedState = JSON.parse(readFileSync(join(execDataDir, 'state.json'), 'utf8'));
+    assert.equal(savedState.poStates[poId].consecutiveSendFailures, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
