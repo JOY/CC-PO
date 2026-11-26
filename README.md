@@ -944,6 +944,22 @@ Antigravity.
   send-message` timeout works cleanly without crashing subsequent sidecar runs,
   covered by a dedicated end-to-end `runGatekeeper` regression test.
 
+### Upgrading to 2.19.2
+
+- **3-tier `safety-heartbeat` (fixes 3–12h idle POs with open backlog):** Adds a
+  `backlog` heartbeat tier (`heartbeatDispatchableMinutes`, default `60`m with
+  gentle `60m → 120m → 180m` backoff when unchanged) whenever a PO has `0`
+  active subagents and `0` open PRs yet still has open unblocked, unclaimed,
+  non-`owner-action` issues; keeps `180`m for active work and `720`m (12h) when
+  truly idle (0 dispatchable issues). Lowers default max unanswered backoff
+  from `240`m to `120`m (`DEFAULT_BACKOFF_MAX_MINUTES = 120`).
+- **Cross-runtime issue dispatch cover & empty-backlog brainstorming:** Extends
+  `peer_po_cover_wait` (default `60`m) so an idle healthy PO can take over and
+  dispatch unclaimed, unblocked `po:<peer>` issues (swapping `po:*` safely via
+  claim lock). Requires POs to pull & refine `Backlog` when `Ready` is empty,
+  and to proactively brainstorm 3–5 next backlog proposals with the owner via
+  popup when both `Ready` and `Backlog` are genuinely empty.
+
 ## License
 
 [MIT](LICENSE)

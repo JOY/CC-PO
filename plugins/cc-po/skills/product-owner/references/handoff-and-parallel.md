@@ -50,8 +50,16 @@ both runtimes are healthy, never a hierarchy.
      (add `ready_for_prod_label` if set, never post `done:` before Production
      verification). For Production/secret steps, still get owner approval in PO
      chat via popup before executing.
-  4. **Do not hijack healthy in-flight work:** Never take over or kill a peer
-     PO's actively running sub-session that is still making progress.
+  4. **Cross-runtime issue dispatch cover (`peer_po_cover_wait`, default `60`m):**
+     When this PO has free slots (`activeSubs < sub_sessions_normal`) and the
+     peer PO has been idle/quiet `>= peer_po_cover_wait` (or quota-exhausted)
+     leaving unclaimed, unblocked, non-`owner-action` issues tagged with the
+     peer's `po:*` label, this PO is authorized to take over and dispatch them:
+     swap the `po:*` label to its own (`--remove-label <peer> --add-label <own>`),
+     claim through `claim_command` / `task-claim` so no two sessions ever race,
+     and comment `Covered dispatch from <peer> PO (idle >= peer_po_cover_wait / quota-limited)`.
+     Still **never** hijack an issue that already has an active claim or a
+     healthy running sub-session from the peer PO.
 - **Separate check-in and handoff files per runtime:** Each PO keeps its own
   check-in and handoff files, named with its runtime
   (`<slug>-<tool>-po-checkin.md`, `<slug>-<tool>-po-handoff.md`), or the files

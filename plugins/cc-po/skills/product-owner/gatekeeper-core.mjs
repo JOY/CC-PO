@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSyn
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+export const DEFAULT_HEARTBEAT_DISPATCHABLE_MINUTES = 60;
 export const DEFAULT_HEARTBEAT_ACTIVE_MINUTES = 180;
 export const DEFAULT_HEARTBEAT_IDLE_MINUTES = 720;
 export const DEFAULT_SUBAGENT_STALL_MINUTES = 30;
@@ -13,7 +14,7 @@ export const DEFAULT_SUBAGENT_COOLDOWN_MINUTES = 120;
 export const DEFAULT_ISSUE_COOLDOWN_MINUTES = 30;
 export const DEFAULT_SUB_SESSIONS_NORMAL = 3;
 export const DEFAULT_BACKOFF_BASE_MINUTES = 60;
-export const DEFAULT_BACKOFF_MAX_MINUTES = 240;
+export const DEFAULT_BACKOFF_MAX_MINUTES = 120;
 export const DEFAULT_QUOTA_PROBE_BASE_MINUTES = 30;
 export const DEFAULT_QUOTA_PROBE_MAX_MINUTES = 120;
 export const MAX_SUBAGENT_QUOTA_PROBES = 3;
@@ -33,6 +34,7 @@ const PASS_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
 const PENDING_STATES = new Set(['PENDING', 'QUEUED', 'IN_PROGRESS', 'EXPECTED', 'WAITING', 'REQUESTED']);
 const PR_ATTENTION_STATUSES = new Set(['CLEAN', 'UNSTABLE', 'CHANGES_REQUESTED', 'DIRTY']);
 const BLOCKED_ISSUE_LABEL_RE = /^(?:blocked|status:blocked|on-hold|waiting|in-progress|claimed)$/i;
+const OWNER_HOLD_LABEL_RE = /^(?:owner[-_]?action|waiting[-_]?owner|needs[-_]?owner|on[-_]?hold|hold|wontfix|duplicate|invalid)$/i;
 const HANDOFF_COMMENT_RE = /(?:^|\n)\s*handoff\s*:/i;
 const CLAIM_OR_CHECKPOINT_RE = /(?:^|\n)\s*(?:claim|checkpoint)\s*:/i;
 const RELEASE_OR_DONE_RE = /(?:^|\n)\s*(?:release|handoff|done)\s*:/i;
@@ -792,6 +794,7 @@ export function evaluateSignals({
   // Signal 4: issue-dispatchable-or-owner-reply (multi-signal mode).
   const currentIssueFingerprints = {};
   const triggeredIssues = [];
+  const dispatchableBacklogNumbers = [];
   const issueCooldownMinutes = positiveInt(config?.issueCooldownMinutes, DEFAULT_ISSUE_COOLDOWN_MINUTES);
   const issueCooldownMs = issueCooldownMinutes * 60_000;
   const prevIssueAlerts = prevPoState?.issueAlertedAt && typeof prevPoState.issueAlertedAt === 'object'
@@ -816,6 +819,13 @@ export function evaluateSignals({
     const commentOpts = { owner: config?.owner || '', peerPoLogins: config?.peerPoLogins || [] };
 
     for (const issue of ownIssues) {
+      const labels = normalizeLabelNames(issue.labels);
+      const isBlocked = labels.some((l) => BLOCKED_ISSUE_LABEL_RE.test(l));
+      const isOwnerHeld = labels.some((l) => OWNER_HOLD_LABEL_RE.test(l));
+      if (!isBlocked && !isOwnerHeld && !hasActiveClaimComment(issue.comments)) {
+        dispatchableBacklogNumbers.push(issue.number);
+      }
+
       const fp = buildIssueFingerprint(issue, commentOpts);
       currentIssueFingerprints[String(issue.number)] = fp;
       const prevFp = prevIssueFps ? prevIssueFps[String(issue.number)] : undefined;
@@ -830,8 +840,6 @@ export function evaluateSignals({
         && comments.latestMs > lastPlannerMs,
       );
 
-      const labels = normalizeLabelNames(issue.labels);
-      const isBlocked = labels.some((l) => BLOCKED_ISSUE_LABEL_RE.test(l));
       const isFresh = updatedMs !== null && updatedMs > lastPlannerMs;
       const wasBlocked = prevFp !== undefined
         && extractIssueLabelsFromFingerprint(prevFp).some((l) => BLOCKED_ISSUE_LABEL_RE.test(l));
@@ -919,8 +927,14 @@ export function evaluateSignals({
 
   // Signal 6: safety-heartbeat (replaces legacy quiet in multi-signal mode).
   // Gate on max(lastPlannerMs, prevSentAtMs) so a queued wake can never re-fire safety-heartbeat every 10m.
+  // 3 tiers:
+  //   - backlog (0 PRs, 0 subagents, >=1 open unblocked/unclaimed/non-owner-action issue): 60m -> 120m -> 180m cap
+  //   - active (open PRs or active subagents): 180m
+  //   - idle (truly empty or all issues blocked/owner-held): 720m
   const idleMs = nowMs - lastPlannerMs;
   const heartbeatIdleMs = nowMs - Math.max(lastPlannerMs, prevSentAtMs);
+  let nextIdleBacklogWakes = 0;
+  let nextIdleBacklogSig = '';
   if (!useMultiSignal) {
     if (idleMs >= activeWindowMs) {
       reasons.push(`quiet for ${Math.floor(idleMs / 60_000)} minutes`);
@@ -928,6 +942,14 @@ export function evaluateSignals({
     }
   } else {
     const hasWorkInFlight = Boolean((ownPrs && ownPrs.length > 0) || (Array.isArray(subSessions) && subSessions.length > 0));
+    const hasDispatchableBacklog = !hasWorkInFlight && dispatchableBacklogNumbers.length > 0;
+    const backlogSig = hasDispatchableBacklog
+      ? [...dispatchableBacklogNumbers].sort((a, b) => a - b).join(',')
+      : '';
+    const hbDispatchMin = positiveInt(
+      config?.heartbeatDispatchableMinutes ?? config?.gatekeeperHeartbeatDispatchableMinutes,
+      DEFAULT_HEARTBEAT_DISPATCHABLE_MINUTES,
+    );
     const hbActiveMin = positiveInt(
       config?.heartbeatActiveMinutes ?? config?.gatekeeperHeartbeatActiveMinutes,
       DEFAULT_HEARTBEAT_ACTIVE_MINUTES,
@@ -936,14 +958,36 @@ export function evaluateSignals({
       config?.heartbeatIdleMinutes ?? config?.gatekeeperHeartbeatIdleMinutes,
       DEFAULT_HEARTBEAT_IDLE_MINUTES,
     );
-    const thresholdMin = hasWorkInFlight ? hbActiveMin : hbIdleMin;
+
+    const sameIdleBacklog = hasDispatchableBacklog && prevPoState?.idleBacklogSig === backlogSig;
+    const prevIdleBacklogWakes = sameIdleBacklog
+      ? Math.max(0, Number(prevPoState?.idleBacklogWakes ?? 0) || 0)
+      : 0;
+    nextIdleBacklogWakes = prevIdleBacklogWakes;
+    nextIdleBacklogSig = backlogSig;
+
+    let mode = 'idle';
+    let thresholdMin = hbIdleMin;
+    if (hasWorkInFlight) {
+      mode = 'active';
+      thresholdMin = hbActiveMin;
+    } else if (hasDispatchableBacklog) {
+      mode = 'backlog';
+      const stepFactor = 2 ** Math.min(2, prevIdleBacklogWakes);
+      thresholdMin = Math.min(Math.max(hbDispatchMin, hbActiveMin), hbDispatchMin * stepFactor);
+    }
+
     if (heartbeatIdleMs >= thresholdMin * 60_000) {
-      reasons.push(`safety-heartbeat (${hasWorkInFlight ? 'active' : 'idle'}, ${Math.floor(idleMs / 60_000)}m)`);
+      reasons.push(`safety-heartbeat (${mode}, ${Math.floor(idleMs / 60_000)}m)`);
       signals.safetyHeartbeat = {
-        mode: hasWorkInFlight ? 'active' : 'idle',
+        mode,
         idleMinutes: Math.floor(idleMs / 60_000),
         thresholdMinutes: thresholdMin,
+        dispatchableBacklogCount: dispatchableBacklogNumbers.length,
       };
+      if (mode === 'backlog') {
+        nextIdleBacklogWakes = prevIdleBacklogWakes + 1;
+      }
     }
   }
 
@@ -959,6 +1003,8 @@ export function evaluateSignals({
     subagentAlertedAt: nextSubAlerts,
     issueAlertedAt: nextIssueAlerts,
     subagentQuotaProbe: nextSubQuotaProbe,
+    idleBacklogWakes: nextIdleBacklogWakes,
+    idleBacklogSig: nextIdleBacklogSig,
     lastEvaluatedAtMs: nowMs,
   };
 
