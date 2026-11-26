@@ -785,9 +785,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.19.1 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.19.1');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.19.1');
+test('the version is 2.19.2 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.19.2');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.19.2');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -3874,4 +3874,113 @@ test('2.19.1 agy-gatekeeper: send-failed triggers send-backoff via imported comp
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// 2.19.2: 3-tier safety-heartbeat (backlog 60m -> 120m -> 180m vs active 180m vs idle 720m),
+// default backoff cap 120m, cross-runtime dispatch cover, and empty-backlog brainstorming.
+test('2.19.2 3-tier safety-heartbeat (backlog/active/idle), 120m backoff cap, dispatch cover, and backlog brainstorm', () => {
+  assert.equal(computeBackoffMs(5), 120 * 60_000, 'default max backoff cap must be 120m');
+
+  const po = { title: 'Give PO', label: 'line:give' };
+  const cfg = { heartbeatActiveMinutes: 180, heartbeatIdleMinutes: 720, multiSignal: true };
+  const t0 = Date.parse('2026-11-26T04:00:00Z');
+  const session = {
+    conversationId: '83b36fa6-0000-0000-0000-000000000001',
+    lastPlannerMs: t0,
+    lastActivityMs: t0,
+    isRunning: false,
+    consecutiveUnansweredWakes: 0,
+  };
+  const readyIssue = {
+    number: 901,
+    state: 'OPEN',
+    labels: [{ name: 'line:give' }],
+    updatedAt: '2026-11-25T00:00:00Z',
+    comments: [],
+  };
+  const ownerActionIssue = {
+    number: 902,
+    state: 'OPEN',
+    labels: [{ name: 'line:give' }, { name: 'owner-action' }],
+    updatedAt: '2026-11-25T00:00:00Z',
+    comments: [],
+  };
+  const prevWith901 = {
+    issueFingerprints: { '901': buildIssueFingerprint(readyIssue) },
+    prFingerprints: {},
+  };
+
+  // 1) 0 PRs, 0 subagents, 1 open unblocked/unclaimed issue -> backlog tier wakes at 60m (NOT 720m!).
+  const rBacklog1 = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [readyIssue],
+    prevPoState: prevWith901,
+    config: cfg,
+    nowMs: t0 + 65 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(rBacklog1.shouldWake, true);
+  assert.equal(rBacklog1.signals.safetyHeartbeat?.mode, 'backlog');
+  assert.equal(rBacklog1.signals.safetyHeartbeat?.thresholdMinutes, 60);
+  assert.equal(rBacklog1.nextPoState.idleBacklogWakes, 1);
+
+  // 2) If PO answers without starting a subagent and backlog signature is unchanged, next wake backs off to 120m (not 60m).
+  const t1 = t0 + 70 * 60_000;
+  const sessionAfterAnswer = { ...session, lastPlannerMs: t1, lastActivityMs: t1 };
+  const stateAfterBacklog1 = { ...rBacklog1.nextPoState, lastSentAtMs: t0 + 65 * 60_000 };
+  const rBacklog2TooEarly = evaluateSignals({
+    po,
+    session: sessionAfterAnswer,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [readyIssue],
+    prevPoState: stateAfterBacklog1,
+    config: cfg,
+    nowMs: t1 + 70 * 60_000, // 70m < 120m
+    multiSignal: true,
+  });
+  assert.equal(rBacklog2TooEarly.shouldWake, false);
+  assert.equal(rBacklog2TooEarly.skipped, 'no-reason');
+
+  const rBacklog2At125m = evaluateSignals({
+    po,
+    session: sessionAfterAnswer,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [readyIssue],
+    prevPoState: stateAfterBacklog1,
+    config: cfg,
+    nowMs: t1 + 125 * 60_000, // 125m >= 120m
+    multiSignal: true,
+  });
+  assert.equal(rBacklog2At125m.shouldWake, true);
+  assert.equal(rBacklog2At125m.signals.safetyHeartbeat?.mode, 'backlog');
+  assert.equal(rBacklog2At125m.signals.safetyHeartbeat?.thresholdMinutes, 120);
+
+  // 3) Only owner-action / blocked issues (0 dispatchable) -> stays in idle tier (720m), does NOT wake at 65m or 300m.
+  const rOwnerOnly = evaluateSignals({
+    po,
+    session,
+    subSessions: [],
+    openPrs: [],
+    openIssues: [ownerActionIssue],
+    prevPoState: { issueFingerprints: { '902': buildIssueFingerprint(ownerActionIssue) }, prFingerprints: {} },
+    config: cfg,
+    nowMs: t0 + 300 * 60_000,
+    multiSignal: true,
+  });
+  assert.equal(rOwnerOnly.shouldWake, false);
+  assert.equal(rOwnerOnly.skipped, 'no-reason');
+
+  // 4) Docs check: dispatch cover and empty-backlog brainstorming documented.
+  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md');
+  const handoff = read('plugins/cc-po/skills/product-owner/references/handoff-and-parallel.md');
+  const readme = read('README.md');
+  assert.match(skill, /proactively brainstorm 3–5 concrete next backlog proposals/);
+  assert.match(skill, /pull & refine `Backlog` issues/);
+  assert.match(handoff, /Cross-runtime issue dispatch cover/);
+  assert.match(readme, /### Upgrading to 2\.19\.2/);
 });
