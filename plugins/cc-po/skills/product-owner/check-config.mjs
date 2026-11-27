@@ -32,7 +32,7 @@ export const KNOWN = new Set([
   'gatekeeper_quiet_minutes', 'gatekeeper_quiet_hours',
   'compact_notice_tokens', 'po_handoff_tokens', 'coordinator_line', 'po_check_in_dir', 'po_handoff',
   'pr_monitor', 'sidebar_groups',
-  'claim_command', 'pr_issue_keyword', 'po_labels', 'promotion_po', 'peer_po_cover_wait',
+  'claim_command', 'pr_issue_keyword', 'po_labels', 'promotion_po', 'peer_po_cover_wait', 'peer_po_issue_cover_wait',
   'sprint_review', 'line_scopes', 'sprint_review_report',
 ]);
 
@@ -421,6 +421,13 @@ export function checkConfig(text, { root } = {}) {
     const n = m ? Number(m[1]) : NaN;
     if (!Number.isInteger(n) || n < 5 || n > 1440) {
       errors.push('peer_po_cover_wait must be a number of minutes from 5 to 1440, off, or none (default 60)');
+    }
+  }
+  if (values.peer_po_issue_cover_wait !== undefined && !isNone(values.peer_po_issue_cover_wait) && !/^off(?![\w-])/i.test(unquote(values.peer_po_issue_cover_wait))) {
+    const m = unquote(values.peer_po_issue_cover_wait).match(/^(\d+)(?![\w.-])/);
+    const n = m ? Number(m[1]) : NaN;
+    if (!Number.isInteger(n) || n < 60 || n > 2880) {
+      errors.push('peer_po_issue_cover_wait must be a number of minutes from 60 to 2880, off, or none (default 240)');
     }
   }
   const poTools = new Set();

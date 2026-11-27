@@ -50,16 +50,23 @@ both runtimes are healthy, never a hierarchy.
      (add `ready_for_prod_label` if set, never post `done:` before Production
      verification). For Production/secret steps, still get owner approval in PO
      chat via popup before executing.
-  4. **Cross-runtime issue dispatch cover (`peer_po_cover_wait`, default `60`m):**
+  4. **Cross-runtime issue dispatch cover (`peer_po_issue_cover_wait`,
+     default `240`m; separate from the merge cover wait above):**
      When this PO has free slots (`activeSubs < sub_sessions_normal`) and the
-     peer PO has been idle/quiet `>= peer_po_cover_wait` (or quota-exhausted)
-     leaving unclaimed, unblocked, non-`owner-action` issues tagged with the
-     peer's `po:*` label, this PO is authorized to take over and dispatch them:
-     swap the `po:*` label to its own (`--remove-label <peer> --add-label <own>`),
-     claim through `claim_command` / `task-claim` so no two sessions ever race,
-     and comment `Covered dispatch from <peer> PO (idle >= peer_po_cover_wait / quota-limited)`.
-     Still **never** hijack an issue that already has an active claim or a
-     healthy running sub-session from the peer PO.
+     peer PO has had no repository activity (push, PR, comment, claim
+     checkpoint) for `>= peer_po_issue_cover_wait` minutes, leaving unclaimed,
+     unblocked, non-`owner-action` issues tagged with the peer's `po:*` label,
+     this PO is authorized to take over and dispatch them: swap the `po:*`
+     label to its own (`--remove-label <peer> --add-label <own>`), claim
+     through `claim_command` / `task-claim` so no two sessions ever race, and
+     comment `Covered dispatch from <peer> PO (idle >= <minutes> minutes)`.
+     **Quota exhaustion is not a reason to cover issues early:** a peer that
+     only hit its quota window comes back within hours and keeps its work.
+     Only an owner instruction, or a peer PO the owner has paused, allows
+     cover before the wait. Still **never** hijack an issue that already has
+     an active claim or a healthy running sub-session from the peer PO. Once
+     the peer returns, finish the covered issue and say so on it; do not hand
+     it back half done.
 - **Separate check-in and handoff files per runtime:** Each PO keeps its own
   check-in and handoff files, named with its runtime
   (`<slug>-<tool>-po-checkin.md`, `<slug>-<tool>-po-handoff.md`), or the files

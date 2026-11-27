@@ -960,6 +960,19 @@ Antigravity.
   and to proactively brainstorm 3–5 next backlog proposals with the owner via
   popup when both `Ready` and `Backlog` are genuinely empty.
 
+### Upgrading to 2.19.3
+
+- **Separate, longer wait for taking over a peer PO's issues
+  (`peer_po_issue_cover_wait`, default `240` min, `60`-`2880`, `off`/`none`):**
+  Issue dispatch cover no longer rides on `peer_po_cover_wait` (which still
+  governs merge and promotion cover, default `60`). A PO takes over a peer's
+  unclaimed, unblocked `po:<peer>` issues only after the peer has had no
+  repository activity for this long. Quota exhaustion never shortens the wait,
+  so a peer stopped only by a 5-hour quota window keeps its work; only an owner
+  instruction or a peer the owner has paused allows earlier cover. Any running
+  peer sub-session still blocks cover, and the covering PO finishes the issue
+  once the peer returns.
+
 ## License
 
 [MIT](LICENSE)

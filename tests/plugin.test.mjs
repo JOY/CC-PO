@@ -785,9 +785,9 @@ test('the gatekeeper keys and po_wake are checked, and po_watchdog is an alias f
   assert.match(schema, /\| `po_watchdog` \| none \| The earlier name of `po_wake`/);
 });
 
-test('the version is 2.19.2 and the README describes the gatekeeper and Antigravity subagents', () => {
-  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.19.2');
-  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.19.2');
+test('the version is 2.19.3 and the README describes the gatekeeper and Antigravity subagents', () => {
+  assert.equal(JSON.parse(read('plugins/cc-po/.claude-plugin/plugin.json')).version, '2.19.3');
+  assert.equal(JSON.parse(read('plugins/cc-po/plugin.json')).version, '2.19.3');
   const readme = flatten(read('README.md').replace(/\r\n/g, '\n'));
   assert.match(readme, /### Upgrading to 2\.6\.0/);
   assert.match(readme, /### Upgrading to 2\.7\.0/);
@@ -3983,4 +3983,31 @@ test('2.19.2 3-tier safety-heartbeat (backlog/active/idle), 120m backoff cap, di
   assert.match(skill, /pull & refine `Backlog` issues/);
   assert.match(handoff, /Cross-runtime issue dispatch cover/);
   assert.match(readme, /### Upgrading to 2\.19\.2/);
+});
+
+// 2.19.3: issue dispatch cover uses its own, longer wait (peer_po_issue_cover_wait, default 240m)
+// and quota exhaustion never shortens it.
+test('2.19.3 separate peer_po_issue_cover_wait (default 240m, quota never shortens it)', () => {
+  assert.deepEqual(
+    checkConfig(minimal + '\n- po_labels: claude: po:claude, agy: po:agy\n- peer_po_issue_cover_wait: 240\n'),
+    { errors: [], warnings: [] },
+  );
+  assert.deepEqual(checkConfig(minimal + '\n- peer_po_issue_cover_wait: off\n'), { errors: [], warnings: [] });
+  assert.deepEqual(checkConfig(minimal + '\n- peer_po_issue_cover_wait: none\n'), { errors: [], warnings: [] });
+  for (const bad of ['30', '3000', 'soon']) {
+    const r = checkConfig(minimal + `\n- peer_po_issue_cover_wait: ${bad}\n`);
+    assert.ok(r.errors.some((e) => /peer_po_issue_cover_wait/.test(e)), bad);
+  }
+
+  const schema = read('plugins/cc-po/skills/product-owner/config-schema.md');
+  const handoff = read('plugins/cc-po/skills/product-owner/references/handoff-and-parallel.md');
+  const skill = read('plugins/cc-po/skills/product-owner/SKILL.md');
+  const readme = read('README.md');
+  assert.match(schema, /\| `peer_po_issue_cover_wait` \| `240` \|/);
+  assert.match(schema, /quota exhaustion never shortens this wait/);
+  assert.match(handoff, /Cross-runtime issue dispatch cover \(`peer_po_issue_cover_wait`/);
+  assert.match(handoff, /Quota exhaustion is not a reason to cover issues early/);
+  assert.doesNotMatch(handoff, /idle\/quiet `>= peer_po_cover_wait` \(or quota-exhausted\)/);
+  assert.match(skill, /after `peer_po_issue_cover_wait`, default 240m/);
+  assert.match(readme, /### Upgrading to 2\.19\.3/);
 });
