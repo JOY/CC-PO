@@ -32,7 +32,9 @@ both runtimes are healthy, never a hierarchy.
   quota-exhausted or unavailable, a healthy peer PO (e.g. Antigravity covering
   Claude, or Claude covering Antigravity) has **full authority to step in, run
   the acceptance gate, approve, and merge** its peer's PR — and cover
-  owner-approved Production promotions — when ALL of the following hold:
+  owner-approved Production promotions — when ALL of the following hold
+  (items 1-3; issue dispatch cover in item 4 has its own wait and no quota
+  trigger):
   1. **100% merge-ready:** PR is non-draft, `CLEAN`/`UNSTABLE`, all
      `required_checks` green, reviews complete, all threads resolved, no
      `CHANGES_REQUESTED`, and if touching auth/money/security/migrations/Production

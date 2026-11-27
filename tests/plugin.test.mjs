@@ -3994,7 +3994,10 @@ test('2.19.3 separate peer_po_issue_cover_wait (default 240m, quota never shorte
   );
   assert.deepEqual(checkConfig(minimal + '\n- peer_po_issue_cover_wait: off\n'), { errors: [], warnings: [] });
   assert.deepEqual(checkConfig(minimal + '\n- peer_po_issue_cover_wait: none\n'), { errors: [], warnings: [] });
-  for (const bad of ['30', '3000', 'soon']) {
+  for (const ok of ['60', '2880']) {
+    assert.deepEqual(checkConfig(minimal + `\n- peer_po_issue_cover_wait: ${ok}\n`), { errors: [], warnings: [] }, ok);
+  }
+  for (const bad of ['30', '59', '2881', '3000', 'soon']) {
     const r = checkConfig(minimal + `\n- peer_po_issue_cover_wait: ${bad}\n`);
     assert.ok(r.errors.some((e) => /peer_po_issue_cover_wait/.test(e)), bad);
   }
